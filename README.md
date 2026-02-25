@@ -1,3 +1,7 @@
+# OlfactML
+
+TinyML scent classification via a BME688 sensor and machine learning.
+
 ### Sketch Usage
 
 1. Install the Arduino IDE
