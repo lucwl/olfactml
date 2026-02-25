@@ -1,90 +1,300 @@
 /**
- * Real-Time Plotting — BME688 Dev Kit
+ * Real-Time Plotting & Recording — BME688 Dev Kit
  *
- * Streams temperature, humidity, pressure, and gas resistance from one of the
- * 8 BME688 sensors on the Bosch dev kit in Arduino Serial Plotter format.
+ * Streams sensor readings in Arduino Serial Plotter format (plot mode)
+ * or saves them to an SD card CSV file (record mode).
+ * Supports two operating modes selectable per sensor via heating profiles:
+ *
+ *   Forced mode   — single heater setpoint, one reading per trigger.
+ *                   Outputs: Temperature, Humidity, Pressure, GasResistance
+ *
+ *   Parallel mode — 10-step heater scan cycle (gas fingerprint).
+ *                   Outputs per complete cycle: Temperature, Humidity,
+ *                   Pressure, Gas0 … Gas9  (one channel per heater step)
  *
  * Serial commands:
- *   start  — begin streaming the active sensor
- *   stop   — pause streaming
- *   1–8    — (only when stopped) switch to that sensor number
+ *   plot              — stream the active sensor to Serial Plotter
+ *   record [1 2 …]    — record one or more sensors simultaneously to SD card.
+ *                       Sensor list is 1-based, space-separated.
+ *                       Omitting the list uses the currently active sensor.
+ *                       Example: "record 1 2 3 4"
+ *   stop              — pause plotting / recording
+ *   1–8               — (stopped only) switch active sensor (for plotting)
+ *   profile <N>       — (stopped only) set heating profile for active sensor
+ *   profiles          — list all available heating profiles
+ *   filename <name>   — (stopped only) set CSV filename (no extension needed)
+ *   label <text>      — set the specimen / class label written to every row
+ *   status            — show mode, active sensors, profile assignments
  *
- * Required libraries: bme68xLibrary (Bosch Sensortec)
+ * SD card CSV columns:
+ *   sensor_index, fingerprint_index, position, plate_temperature,
+ *   heater_duration, temperature, pressure, humidity, gas_resistance, label
+ *
+ * Typical workflow for a new specimen:
+ *   stop  →  filename specimen2  →  label lavender  →  record 1 2 3 4
+ *
+ * Power-recovery workflow (resume an interrupted file):
+ *   record 1 2 3 4    (same filename — file is appended automatically)
+ *
+ * Required libraries: bme68xLibrary (Bosch Sensortec), SD (Arduino built-in)
  */
 
 #include "Arduino.h"
 #include "bme68xLibrary.h"
 #include "commMux.h"
+#include "sdLogger.h"
 
-/* ── State ────────────────────────────────────────────────────────────── */
+/* ── LED ────────────────────────────────────────────────────────────────
+ * The built-in LED blinks at 1 Hz while recording is active.
+ * Change LED_PIN if your board uses a different pin. */
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2
+#endif
+#define LED_PIN LED_BUILTIN
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Heating profile definitions
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+struct HeatingProfile {
+  const char *name;
+  const char *description;
+  bool        isParallel;
+  /* Forced mode */
+  uint16_t    forcedTemp;      // target temperature, °C
+  uint16_t    forcedDur;       // heater duration, ms
+  /* Parallel mode */
+  uint8_t     profileLen;      // number of heater steps (max 10)
+  uint16_t    tempProf[10];    // heater temperatures, °C
+  uint16_t    mulProf[10];     // heater duration multipliers
+};
+
+/* Profile IDs are 1-based in user commands; 0-based as array index.
+ *
+ * Parallel-mode duration multipliers:
+ *   The sensor's actual heater-on time per step ≈ mulProf[i] * sharedHeatrDur / 63 ms,
+ *   where sharedHeatrDur = 140 − T/P/H measurement time (computed in initSensor).
+ *   Larger multipliers → longer dwell at that temperature step. */
+const HeatingProfile PROFILES[] = {
+
+  /* ── Forced mode ──────────────────────────────────────────────────── */
+  {
+    "Forced_Std",
+    "[F] 320 C / 150 ms  (default)",
+    false, 320, 150, 0, {0}, {0}
+  },
+  {
+    "Forced_Low",
+    "[F] 200 C / 150 ms",
+    false, 200, 150, 0, {0}, {0}
+  },
+  {
+    "Forced_High",
+    "[F] 400 C / 200 ms",
+    false, 400, 200, 0, {0}, {0}
+  },
+
+  /* ── Parallel mode ────────────────────────────────────────────────── */
+  {
+    "Par_Bosch",
+    "[P] Bosch standard 10-step: 320,100,100,100,200,200,200,320,320,320 C",
+    true, 0, 0, 10,
+    {320, 100, 100, 100, 200, 200, 200, 320, 320, 320},
+    {  5,   2,  10,  30,   5,   5,   5,   5,   5,   5}
+  },
+  {
+    "Par_LinSweep",
+    "[P] Linear sweep  200 -> 400 C  (10 equal steps)",
+    true, 0, 0, 10,
+    {200, 222, 244, 267, 289, 311, 333, 356, 378, 400},
+    {  5,   5,   5,   5,   5,   5,   5,   5,   5,   5}
+  },
+  {
+    "Par_WideSweep",
+    "[P] Wide sweep    100 -> 450 C  (10 steps)",
+    true, 0, 0, 10,
+    {100, 150, 200, 250, 300, 325, 350, 380, 415, 450},
+    { 10,   8,   7,   6,   5,   5,   5,   5,   5,   5}
+  },
+  {
+    "Par_HighFocus",
+    "[P] High-temp     300 -> 450 C  (10 steps)",
+    true, 0, 0, 10,
+    {300, 317, 333, 350, 367, 383, 400, 417, 433, 450},
+    {  5,   5,   5,   5,   5,   5,   5,   5,   5,   5}
+  },
+  {
+    "Par_LowFocus",
+    "[P] Low-temp      100 -> 250 C  (10 steps)",
+    true, 0, 0, 10,
+    {100, 117, 133, 150, 167, 183, 200, 217, 233, 250},
+    { 10,   9,   8,   8,   7,   7,   6,   6,   6,   5}
+  },
+};
+
+const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Global state
+ * ═══════════════════════════════════════════════════════════════════════ */
+
 Bme68x  bme;
 commMux commSetup;
 
-uint8_t sensorIdx = 0;      // 0-based; default = sensor 1
-bool    plotting  = false;
+uint8_t sensorIdx        = 0;                   // 0-based active sensor (for plotting)
+uint8_t sensorProfile[8] = {0,0,0,0,0,0,0,0};  // per-sensor profile index
 
-String  cmdBuffer = "";
+/* Shared heater duration (ms) per sensor, computed in initSensor for
+ * parallel profiles; used to convert multipliers to approximate ms. */
+uint16_t sharedHeatrDur[8] = {0,0,0,0,0,0,0,0};
 
-/* ── Sensor initialisation ────────────────────────────────────────────── */
+/* Operating mode */
+enum Mode { IDLE, PLOTTING, RECORDING };
+Mode mode = IDLE;
+
+/* Recording state */
+String   recordFilename    = "data";      // filename without extension
+String   recordLabel       = "unlabeled"; // specimen / class label
+uint8_t  recordSensors[8];               // 0-based sensor indices being recorded
+uint8_t  recordSensorCount = 0;
+
+String cmdBuffer = "";
+
+/* Per-sensor parallel-mode cycle accumulation */
+float   gasBuffer[8][10];        // gas resistance per sensor per heater step
+bool    gasReceived[8][10];      // valid data flags per sensor per step
+float   lastTemp[8]    = {0};
+float   lastHum[8]     = {0};
+float   lastPres[8]    = {0};
+int8_t  lastGasIdx[8]  = {-1,-1,-1,-1,-1,-1,-1,-1};
+
+/* Per-sensor fingerprint (scan-cycle) counter, reset on each record start */
+uint32_t fingerprintIndex[8] = {0};
+
+/* LED blink state (1 Hz during recording) */
+uint32_t lastLedToggle = 0;
+bool     ledState      = false;
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * LED helper
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+void updateLed() {
+  if (mode == RECORDING) {
+    uint32_t now = millis();
+    if (now - lastLedToggle >= 500) {   // toggle every 500 ms → 1 Hz blink
+      lastLedToggle = now;
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+    }
+  } else {
+    if (ledState) {
+      ledState = false;
+      digitalWrite(LED_PIN, LOW);
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Sensor initialisation
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+void resetGasBuffer(uint8_t si, uint8_t len) {
+  for (uint8_t i = 0; i < len; i++) {
+    gasBuffer[si][i]   = 0.0f;
+    gasReceived[si][i] = false;
+  }
+  lastGasIdx[si] = -1;
+}
+
 void initSensor(uint8_t idx) {
+  const HeatingProfile &prof = PROFILES[sensorProfile[idx]];
+
   commSetup = commMuxSetConfig(Wire, SPI, idx, commSetup);
   bme.begin(BME68X_SPI_INTF, commMuxRead, commMuxWrite, commMuxDelay, &commSetup);
 
   if (bme.checkStatus()) {
-    Serial.println("ERR: Sensor " + String(idx + 1) + " init failed: " + bme.statusString());
+    Serial.println("ERR sensor " + String(idx + 1) + ": " + bme.statusString());
     return;
   }
 
-  /* Oversampling: temp 8x, pressure 4x, humidity 2x */
   bme.setTPH(BME68X_OS_8X, BME68X_OS_4X, BME68X_OS_2X);
-
-  /* IIR filter size 3 */
   bme.setFilter(BME68X_FILTER_SIZE_3);
 
-  /* Single heater step for forced mode: 320 °C, 150 ms */
-  bme.setHeaterProf(320, 150);
+  if (prof.isParallel) {
+    /* Copy to non-const locals — the library takes non-const pointers */
+    uint16_t tArr[10], mArr[10];
+    memcpy(tArr, prof.tempProf, prof.profileLen * sizeof(uint16_t));
+    memcpy(mArr, prof.mulProf,  prof.profileLen * sizeof(uint16_t));
+    /* sharedHeatrDur = ODR period minus T/P/H measurement time */
+    uint16_t sharedDur = 140 - (bme.getMeasDur(BME68X_PARALLEL_MODE) / 1000);
+    bme.setHeaterProf(tArr, mArr, sharedDur, prof.profileLen);
+    sharedHeatrDur[idx] = sharedDur;
+  } else {
+    bme.setHeaterProf(prof.forcedTemp, prof.forcedDur);
+    sharedHeatrDur[idx] = 0;
+  }
+  /* Note: initSensor leaves commSetup pointing at idx. */
 }
 
-/* ── Setup ────────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════
+ * Setup
+ * ═══════════════════════════════════════════════════════════════════════ */
+
 void setup() {
   Serial.begin(921600);
   Serial.println("Initializing...");
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
   commMuxBegin(Wire, SPI);
   delay(100);
 
   initSensor(sensorIdx);
+  sdInit();
 
-  Serial.println("Ready. Commands: start | stop | 1-8");
-  Serial.println("Active sensor: 1");
+  Serial.println("Ready.");
+  Serial.println("Commands: plot | record [1 2 …] | stop | 1-8 | profile <N> | profiles");
+  Serial.println("          filename <name> | label <text> | status");
+  Serial.println("Active: sensor 1, profile 1 [Forced_Std]");
+  Serial.println("File  : " + recordFilename + ".csv   Label: " + recordLabel);
 }
 
-/* ── Command handling ─────────────────────────────────────────────────── */
-void handleCommand(const String &cmd) {
-  if (cmd == "start") {
-    plotting = true;
-    Serial.println("Plotting sensor " + String(sensorIdx + 1));
+/* ═══════════════════════════════════════════════════════════════════════
+ * Serial Plotter output helpers  (plotting mode — single sensor only)
+ * ═══════════════════════════════════════════════════════════════════════ */
 
-  } else if (cmd == "stop") {
-    plotting = false;
-    Serial.println("Stopped. Active sensor: " + String(sensorIdx + 1));
+void printForcedLine(const bme68xData &d) {
+  Serial.print("Temperature:"); Serial.print(d.temperature, 2);
+  Serial.print(" Humidity:");   Serial.print(d.humidity,    2);
+  Serial.print(" Pressure:");   Serial.print(d.pressure / 100.0f, 2);
+  Serial.print(" GasResistance:"); Serial.println(d.gas_resistance, 0);
+}
 
-  } else if (cmd.length() == 1 && cmd[0] >= '1' && cmd[0] <= '8') {
-    if (plotting) {
-      Serial.println("Stop plotting before switching sensors.");
-    } else {
-      sensorIdx = (uint8_t)(cmd[0] - '1');
-      initSensor(sensorIdx);
-      Serial.println("Switched to sensor " + String(sensorIdx + 1) + ". Send 'start' to begin.");
-    }
-
-  } else {
-    Serial.println("Unknown command. Use: start | stop | 1-8");
+void printParallelCycle(uint8_t si, uint8_t profileLen) {
+  bool anyValid = false;
+  for (uint8_t i = 0; i < profileLen; i++) {
+    if (gasReceived[si][i]) { anyValid = true; break; }
   }
+  if (!anyValid) return;
+
+  Serial.print("Temperature:"); Serial.print(lastTemp[si], 2);
+  Serial.print(" Humidity:");   Serial.print(lastHum[si],  2);
+  Serial.print(" Pressure:");   Serial.print(lastPres[si], 2);
+  for (uint8_t i = 0; i < profileLen; i++) {
+    Serial.print(" Gas"); Serial.print(i); Serial.print(":");
+    Serial.print(gasReceived[si][i] ? gasBuffer[si][i] : 0.0f, 0);
+  }
+  Serial.println();
 }
 
-/* ── Single measurement + Serial Plotter output ───────────────────────── */
-void takeMeasurement() {
+/* ═══════════════════════════════════════════════════════════════════════
+ * Measurement functions
+ * Caller must have set commSetup to sensor si before calling.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+void takeForcedMeasurement(uint8_t si) {
   bme.setOpMode(BME68X_FORCED_MODE);
   delayMicroseconds(bme.getMeasDur(BME68X_FORCED_MODE));
 
@@ -95,21 +305,280 @@ void takeMeasurement() {
   if (!(data.status & BME68X_NEW_DATA_MSK))   return;
   if (!(data.status & BME68X_GASM_VALID_MSK)) return;
 
-  /* Arduino Serial Plotter format: Label:value pairs separated by spaces.
-   * All four channels are plotted simultaneously on the same graph. */
-  Serial.print("Temperature:");
-  Serial.print(data.temperature, 2);
-  Serial.print(" Humidity:");
-  Serial.print(data.humidity, 2);
-  Serial.print(" Pressure:");
-  Serial.print(data.pressure / 100.0f, 2);   // Pa → hPa
-  Serial.print(" GasResistance:");
-  Serial.println(data.gas_resistance, 0);     // Ω, no decimals needed
+  if (mode == PLOTTING) {
+    printForcedLine(data);
+  }
+
+  if (mode == RECORDING) {
+    const HeatingProfile &prof = PROFILES[sensorProfile[si]];
+    sdLogRow(si + 1,
+             fingerprintIndex[si],
+             0,                   // position — single step in forced mode
+             prof.forcedTemp,
+             prof.forcedDur,
+             data.temperature,
+             data.pressure / 100.0f,
+             data.humidity,
+             data.gas_resistance,
+             recordLabel);
+    fingerprintIndex[si]++;
+  }
 }
 
-/* ── Main loop ────────────────────────────────────────────────────────── */
+/* Poll for new parallel-mode samples from sensor si.
+ * PLOTTING mode: flush a complete-cycle line to Serial Plotter after each
+ *   full scan cycle.
+ * RECORDING mode: log each individual step to the SD card CSV file as soon
+ *   as it arrives; all steps of one cycle share the same fingerprintIndex. */
+void pollParallelMeasurement(uint8_t si) {
+  const HeatingProfile &prof = PROFILES[sensorProfile[si]];
+
+  uint8_t nFields = bme.fetchData();
+  if (nFields == 0) return;
+
+  bme68xData data;
+  for (uint8_t f = 0; f < nFields; f++) {
+    bme.getData(data);
+    if (!(data.status & BME68X_NEW_DATA_MSK)) continue;
+
+    lastTemp[si] = data.temperature;
+    lastHum[si]  = data.humidity;
+    lastPres[si] = data.pressure / 100.0f;
+
+    uint8_t gi = data.gas_index;
+
+    /* Detect the start of a new scan cycle (gas_index rolled back).
+     * Flush the previous cycle's plotter output, reset the gas buffer,
+     * and advance the fingerprint index for the new cycle. */
+    bool cycleRollover = (lastGasIdx[si] >= 0 && (int8_t)gi <= lastGasIdx[si]);
+    bool cycleEnd      = (gi == (uint8_t)(prof.profileLen - 1));
+
+    if (cycleRollover) {
+      if (mode == PLOTTING) printParallelCycle(si, prof.profileLen);
+      resetGasBuffer(si, prof.profileLen);
+      fingerprintIndex[si]++;
+    }
+
+    if (data.status & BME68X_GASM_VALID_MSK) {
+      gasBuffer[si][gi]   = data.gas_resistance;
+      gasReceived[si][gi] = true;
+
+      if (mode == RECORDING) {
+        /* Approximate heater-on time: mulProf[step] * sharedHeatrDur / 63 */
+        uint16_t heatDur = (uint16_t)(
+          (uint32_t)prof.mulProf[gi] * sharedHeatrDur[si] / 63);
+
+        sdLogRow(si + 1,
+                 fingerprintIndex[si],
+                 gi,                    // position = heater step index
+                 prof.tempProf[gi],     // plate_temperature for this step
+                 heatDur,
+                 data.temperature,
+                 data.pressure / 100.0f,
+                 data.humidity,
+                 data.gas_resistance,
+                 recordLabel);
+      }
+    }
+
+    lastGasIdx[si] = (int8_t)gi;
+
+    /* Natural end of profile — flush display, reset buffer.
+     * (fingerprintIndex is NOT incremented here; the next cycle's
+     *  rollover detection handles that.) */
+    if (cycleEnd && !cycleRollover) {
+      if (mode == PLOTTING) printParallelCycle(si, prof.profileLen);
+      resetGasBuffer(si, prof.profileLen);
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Command handling
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+void handleCommand(const String &cmd) {
+
+  /* ── plot ──────────────────────────────────────────────────────────── */
+  if (cmd == "plot") {
+    if (mode != IDLE) {
+      Serial.println(">> Stop first.");
+      return;
+    }
+    const HeatingProfile &prof = PROFILES[sensorProfile[sensorIdx]];
+    commSetup = commMuxSetConfig(Wire, SPI, sensorIdx, commSetup);
+    mode = PLOTTING;
+    if (prof.isParallel) {
+      resetGasBuffer(sensorIdx, prof.profileLen);
+      bme.setOpMode(BME68X_PARALLEL_MODE);
+    }
+    Serial.println(">> Plotting sensor " + String(sensorIdx + 1) +
+                   " [" + String(prof.name) + "]");
+
+  /* ── record [1 2 …] ────────────────────────────────────────────────── */
+  } else if (cmd == "record" || cmd.startsWith("record ")) {
+    if (mode != IDLE) {
+      Serial.println(">> Stop first.");
+      return;
+    }
+
+    /* Parse space-separated 1-based sensor numbers after "record" */
+    recordSensorCount = 0;
+    if (cmd.length() > 7) {
+      String args = cmd.substring(7);   // everything after "record "
+      int pos = 0;
+      while (pos < (int)args.length() && recordSensorCount < 8) {
+        while (pos < (int)args.length() && args[pos] == ' ') pos++;
+        if (pos >= (int)args.length()) break;
+        int end = args.indexOf(' ', pos);
+        String token = (end == -1) ? args.substring(pos) : args.substring(pos, end);
+        int n = token.toInt();
+        if (n >= 1 && n <= 8) recordSensors[recordSensorCount++] = (uint8_t)(n - 1);
+        pos = (end == -1) ? args.length() : end + 1;
+      }
+    }
+    if (recordSensorCount == 0) {
+      /* Fallback: use the currently active sensor */
+      recordSensors[0]  = sensorIdx;
+      recordSensorCount = 1;
+    }
+
+    if (!sdOpenFile(recordFilename)) {
+      Serial.println(">> Recording aborted — SD card error.");
+      return;
+    }
+
+    /* Initialise and start each recording sensor */
+    for (uint8_t i = 0; i < recordSensorCount; i++) {
+      uint8_t si = recordSensors[i];
+      initSensor(si);               // (re)configure; leaves commSetup on si
+      fingerprintIndex[si] = 0;
+      const HeatingProfile &prof = PROFILES[sensorProfile[si]];
+      if (prof.isParallel) {
+        resetGasBuffer(si, prof.profileLen);
+        bme.setOpMode(BME68X_PARALLEL_MODE);
+      }
+      /* Forced-mode sensors are triggered individually in the loop. */
+    }
+
+    mode = RECORDING;
+
+    Serial.print(">> Recording sensors:");
+    for (uint8_t i = 0; i < recordSensorCount; i++) {
+      Serial.print(" " + String(recordSensors[i] + 1) +
+                   "[" + String(PROFILES[sensorProfile[recordSensors[i]]].name) + "]");
+    }
+    Serial.println("  file=" + recordFilename + ".csv  label=" + recordLabel);
+
+  /* ── stop ──────────────────────────────────────────────────────────── */
+  } else if (cmd == "stop") {
+    if (mode == PLOTTING) {
+      commSetup = commMuxSetConfig(Wire, SPI, sensorIdx, commSetup);
+      bme.setOpMode(BME68X_SLEEP_MODE);
+    } else if (mode == RECORDING) {
+      for (uint8_t i = 0; i < recordSensorCount; i++) {
+        commSetup = commMuxSetConfig(Wire, SPI, recordSensors[i], commSetup);
+        bme.setOpMode(BME68X_SLEEP_MODE);
+      }
+    }
+    mode = IDLE;
+    Serial.println(">> Stopped.");
+
+  /* ── sensor select (1–8) — affects plotting only ───────────────────── */
+  } else if (cmd.length() == 1 && cmd[0] >= '1' && cmd[0] <= '8') {
+    if (mode != IDLE) {
+      Serial.println(">> Stop before switching sensors.");
+    } else {
+      sensorIdx = (uint8_t)(cmd[0] - '1');
+      initSensor(sensorIdx);
+      Serial.println(">> Active sensor " + String(sensorIdx + 1) +
+                     " [" + String(PROFILES[sensorProfile[sensorIdx]].name) +
+                     "].  Send 'plot' or 'record' to begin.");
+    }
+
+  /* ── profile <N> ───────────────────────────────────────────────────── */
+  } else if (cmd.startsWith("profile ")) {
+    if (mode != IDLE) {
+      Serial.println(">> Stop before changing profile.");
+    } else {
+      int n = cmd.substring(8).toInt();
+      if (n < 1 || n > (int)NUM_PROFILES) {
+        Serial.println(">> Profile must be 1–" + String(NUM_PROFILES) +
+                       ".  Send 'profiles' to list.");
+      } else {
+        sensorProfile[sensorIdx] = (uint8_t)(n - 1);
+        initSensor(sensorIdx);
+        Serial.println(">> Sensor " + String(sensorIdx + 1) +
+                       " profile set to " + String(n) +
+                       " [" + String(PROFILES[sensorProfile[sensorIdx]].name) + "]");
+      }
+    }
+
+  /* ── filename <name> ───────────────────────────────────────────────── */
+  } else if (cmd.startsWith("filename ")) {
+    if (mode != IDLE) {
+      Serial.println(">> Stop before changing filename.");
+    } else {
+      recordFilename = cmd.substring(9);
+      recordFilename.trim();
+      Serial.println(">> Filename set to: " + recordFilename + ".csv");
+    }
+
+  /* ── label <text> ──────────────────────────────────────────────────── */
+  } else if (cmd.startsWith("label ")) {
+    recordLabel = cmd.substring(6);
+    recordLabel.trim();
+    Serial.println(">> Label set to: " + recordLabel);
+
+  /* ── profiles ──────────────────────────────────────────────────────── */
+  } else if (cmd == "profiles") {
+    Serial.println("--- Available heating profiles ---");
+    for (uint8_t i = 0; i < NUM_PROFILES; i++) {
+      Serial.println("  " + String(i + 1) + ": " +
+                     String(PROFILES[i].name) + "  " +
+                     String(PROFILES[i].description));
+    }
+    Serial.println("----------------------------------");
+
+  /* ── status ────────────────────────────────────────────────────────── */
+  } else if (cmd == "status") {
+    const char *modeStr = (mode == PLOTTING)  ? "plotting"  :
+                          (mode == RECORDING) ? "recording" : "idle";
+    Serial.println("Mode          : " + String(modeStr));
+    Serial.println("Active sensor : " + String(sensorIdx + 1) +
+                   " [" + String(PROFILES[sensorProfile[sensorIdx]].name) + "]");
+    Serial.println("Filename      : " + recordFilename + ".csv");
+    Serial.println("Label         : " + recordLabel);
+    if (mode == RECORDING) {
+      Serial.print("Recording     :");
+      for (uint8_t i = 0; i < recordSensorCount; i++) {
+        uint8_t si = recordSensors[i];
+        Serial.print("  S" + String(si + 1) +
+                     "[fp=" + String(fingerprintIndex[si]) + "]");
+      }
+      Serial.println();
+    }
+    Serial.println("Per-sensor profile assignments:");
+    for (uint8_t i = 0; i < 8; i++) {
+      Serial.println("  S" + String(i + 1) + ": profile " +
+                     String(sensorProfile[i] + 1) +
+                     " [" + String(PROFILES[sensorProfile[i]].name) + "]");
+    }
+
+  /* ── unknown ───────────────────────────────────────────────────────── */
+  } else {
+    Serial.println(">> Unknown: '" + cmd + "'");
+    Serial.println("   Commands: plot | record [1 2 …] | stop | 1-8 | profile <N> | profiles");
+    Serial.println("             filename <name> | label <text> | status");
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Main loop
+ * ═══════════════════════════════════════════════════════════════════════ */
+
 void loop() {
-  /* Non-blocking serial command reader — accumulate until newline */
+  /* Non-blocking serial command reader */
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == '\n' || c == '\r') {
@@ -123,8 +592,34 @@ void loop() {
     }
   }
 
-  if (plotting) {
-    takeMeasurement();
-    delay(500);
+  if (mode == PLOTTING) {
+    commSetup = commMuxSetConfig(Wire, SPI, sensorIdx, commSetup);
+    const HeatingProfile &prof = PROFILES[sensorProfile[sensorIdx]];
+    if (prof.isParallel) {
+      pollParallelMeasurement(sensorIdx);
+      delay(10);
+    } else {
+      takeForcedMeasurement(sensorIdx);
+      delay(500);
+    }
+
+  } else if (mode == RECORDING) {
+    bool anyParallel = false;
+    for (uint8_t i = 0; i < recordSensorCount; i++) {
+      uint8_t si = recordSensors[i];
+      commSetup = commMuxSetConfig(Wire, SPI, si, commSetup);
+      const HeatingProfile &prof = PROFILES[sensorProfile[si]];
+      if (prof.isParallel) {
+        pollParallelMeasurement(si);
+        anyParallel = true;
+      } else {
+        takeForcedMeasurement(si);
+      }
+    }
+    /* For all-parallel sessions yield to the ESP32 scheduler;
+     * forced-mode measurements already include their own wait. */
+    if (anyParallel) delay(10);
   }
+
+  updateLed();
 }
