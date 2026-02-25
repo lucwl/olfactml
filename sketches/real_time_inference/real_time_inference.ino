@@ -58,13 +58,30 @@ constexpr int kTensorArenaSize = 10 * 1024;
  * Class labels  (order must match the model's output indices)
  * ═══════════════════════════════════════════════════════════════════════ */
 
-constexpr int NUM_CLASSES = 4;
-constexpr int NUM_FEATURES = 4;
+constexpr int NUM_CLASSES = 2;
+constexpr int NUM_FEATURES = 6;
 const char* const CLASS_LABELS[NUM_CLASSES] = {
-    "lavender",
-    "grapefruit",
-    "eucalyptus",
+    //"lavender",
+    //"grapefruit",
     "air",
+    "eucalyptus",
+    //"lavender",
+};
+
+const char* const FEATURES[NUM_FEATURES] {
+    "plate_temperature",
+    "heater_duration",
+    "temperature",
+    "pressure",
+    "humidity",
+    "gas_resistance",
+};
+
+const char* const FEATURES_TO_PREPROCESS[4] {
+    "temperature",
+    "pressure",
+    "humidity",
+    "gas_resistance",
 };
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -85,9 +102,9 @@ static tflite::MicroInterpreter* interpreter = nullptr;
  * Feature standardisation
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* z-score:  z = (x − μ) / σ,  where σ = sqrt(variance) */
+/* z-score:  z = (x − μ) / σ */
 inline float standardise(float value, int feature_idx) {
-    return (value - FEATURE_MEAN[feature_idx]) / sqrtf(FEATURE_VAR[feature_idx]);
+    return (value - FEATURE_MEAN[feature_idx]) / FEATURE_STD[feature_idx];
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -182,11 +199,11 @@ void loop() {
     /* ── Build raw feature vector ────────────────────────────────────── */
     // keep in mind the order of features
     const float raw[NUM_FEATURES] = {
-        //data.temperature,
-        0.15 * FEATURE_VAR[0] + FEATURE_MEAN[0],
+        320.0f, // plate temperature
+        150.0f, // heater duration
+        data.temperature,
         data.pressure / 100.0f,
-        //data.humidity,
-        -1.0 * FEATURE_VAR[2] + FEATURE_MEAN[2],
+        data.humidity,
         data.gas_resistance,
     };
 
@@ -204,7 +221,11 @@ void loop() {
     Serial.print("[");
     for (int i = 0; i < NUM_FEATURES; i++) {
         Serial.print(" ");
-        Serial.print(standardise(raw[i], i));
+        if (std::find(std::begin(FEATURES_TO_PREPROCESS), std::end(FEATURES_TO_PREPROCESS), FEATURES[i]) != std::end(FEATURES_TO_PREPROCESS)) {
+            Serial.print(standardise(raw[i], i));
+        } else {
+            Serial.print(raw[i], i);
+        }
         Serial.print(" ");
     }
     Serial.print("]");
@@ -212,8 +233,12 @@ void loop() {
 
     /* ── Standardise and write to input tensor ───────────────────────── */
     TfLiteTensor* input_tensor = interpreter->input(0);
-    for (int i = 0; i < 4; i++) {
-        input_tensor->data.f[i] = standardise(raw[i], i);
+    for (int i = 0; i < NUM_FEATURES; i++) {
+        if (std::find(std::begin(FEATURES_TO_PREPROCESS), std::end(FEATURES_TO_PREPROCESS), FEATURES[i]) != std::end(FEATURES_TO_PREPROCESS)) {
+            input_tensor->data.f[i] = standardise(raw[i], i);
+        } else {
+            input_tensor->data.f[i] = raw[i];
+        }
     }
 
     /* ── Run inference ───────────────────────────────────────────────── */

@@ -22,19 +22,23 @@
 #define STATISTICS_H
 
 /* Per-feature mean of the training set */
-const float FEATURE_MEAN[4] = {
-    35.8f,        // temperature     (°C)
-    997.9f,      // pressure        (hPa)
-    20.7f,        // humidity        (%)
-    1275333.1f,    // gas resistance  (Ω)
+const float FEATURE_MEAN[6] = {
+    320.0f,
+    150.0f,
+    31.8f,        // temperature     (°C)
+    999.8f,      // pressure        (hPa)
+    27.8f,        // humidity        (%)
+    111772.5f,    // gas resistance  (Ω)
 };
 
-/* Per-feature variance of the training set  (std = sqrt(variance)) */
-const float FEATURE_VAR[4] = {
-    4.3f,        // temperature     (°C²) →  std ≈ 5 °C
-    14.4f,       // pressure        (hPa²)→  std ≈ 10 hPa
-    12.8f,       // humidity        (%²)  →  std ≈ 15 %
-    15002761438664.4f,      // gas resistance  (Ω²)  →  std ≈ 500 000 Ω
+/* Per-feature standard deviation of the training set */
+const float FEATURE_STD[6] = {
+    0.0f,
+    0.0f,
+    1.3f,        // temperature     
+    1.5f,       // pressure        
+    3.0f,       // humidity        
+    68951.5f,      // gas resistance
 };
 
 #endif /* STATISTICS_H */
