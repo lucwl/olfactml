@@ -109,6 +109,14 @@ const HeatingProfile PROFILES[] = {
     SCAN_SEQUENTIAL, 0, 0, 10,
     {200, 222, 244, 267, 289, 311, 333, 356, 378, 400},
     {150, 150, 150, 150, 150, 150, 150, 150, 150, 150}, BME68X_ODR_500_MS },
+  { "Seq_Bosch",     "[S] Bosch 10-step: 320,100x3,200x3,320x3 C / 150 ms each, 500 ms ODR sleep",
+    SCAN_SEQUENTIAL, 0, 0, 10,
+    {320, 100, 100, 100, 200, 200, 200, 320, 320, 320},
+    {150, 150, 150, 150, 150, 150, 150, 150, 150, 150}, BME68X_ODR_500_MS },
+  { "Seq_WideSweep", "[S] Wide sweep 100->450 C (10 steps, longer dwell at low temps, 500 ms ODR sleep)",
+    SCAN_SEQUENTIAL, 0, 0, 10,
+    {100, 150, 200, 250, 300, 325, 350, 380, 415, 450},
+    {200, 180, 160, 150, 150, 140, 140, 140, 140, 140}, BME68X_ODR_500_MS },
 };
 
 const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
@@ -143,6 +151,8 @@ bool running = false;
 float   gasBuffer[10];
 bool    gasReceived[10];
 float   lastTemp = 0, lastHum = 0, lastPres = 0;
+int8_t  lastGasIdx  = -1;   // gas_index of the last received field (-1 = none yet)
+bool    cycleHasData = false; // true when ≥1 valid gas step received this cycle
 
 String cmdBuffer = "";
 
@@ -166,6 +176,7 @@ void resetGasBuffer(uint8_t len) {
     gasBuffer[i]   = 0.0f;
     gasReceived[i] = false;
   }
+  lastGasIdx = -1;
 }
 
 /* Checks that every step in [0, profileLen) received a valid gas reading.
@@ -305,8 +316,9 @@ void takeForcedMeasurement() {
 }
 
 /* Poll for new parallel-mode samples.
- * Accumulates steps into gasBuffer; at cycle end, validates the complete
- * scan against profileLen, then triggers inference (pending implementation). */
+ * Cycle boundary detected by gas_index wrapping backwards — fires reliably on
+ * the first reading of a new cycle regardless of whether the previous cycle's
+ * last step had valid gas. At boundary: validate complete scan, then reset. */
 void pollParallelMeasurement() {
   const HeatingProfile &prof = PROFILES[activeProfile];
 
@@ -318,30 +330,35 @@ void pollParallelMeasurement() {
     bme.getData(data);
     if (!(data.status & BME68X_NEW_DATA_MSK)) continue;
 
+    uint8_t gi = data.gas_index;
+
+    /* Wrap-around boundary detection (same logic as real_time_plotting) */
+    if (lastGasIdx >= 0 && (int8_t)gi < lastGasIdx) {
+      if (cycleHasData && validateScanSize(prof.profileLen)) {
+        Serial.println("[Parallel] Complete " + String(prof.profileLen) +
+                       "-step scan — parallel-mode inference not yet implemented.");
+      }
+      cycleHasData = false;
+      resetGasBuffer(prof.profileLen);
+    }
+
     lastTemp = data.temperature;
     lastHum  = data.humidity;
     lastPres = data.pressure / 100.0f;
 
-    uint8_t gi       = data.gas_index;
-    bool    cycleEnd = (gi == (uint8_t)(prof.profileLen - 1));
-
     if ((data.status & GAS_VALID_MSK) == GAS_VALID_MSK) {
       gasBuffer[gi]   = data.gas_resistance;
       gasReceived[gi] = true;
+      cycleHasData    = true;
     }
 
-    if (cycleEnd) {
-      if (validateScanSize(prof.profileLen)) {
-        Serial.println("[Parallel] Complete " + String(prof.profileLen) +
-                       "-step scan — parallel-mode inference not yet implemented.");
-      }
-      resetGasBuffer(prof.profileLen);
-    }
+    lastGasIdx = (int8_t)gi;
   }
 }
 
 /* Poll for new sequential-mode samples.
- * Identical accumulation logic to parallel; mulProf holds actual ms durations. */
+ * Same wrap-around boundary detection as parallel mode.
+ * mulProf holds actual heater durations (ms) rather than multipliers. */
 void pollSequentialMeasurement() {
   const HeatingProfile &prof = PROFILES[activeProfile];
 
@@ -353,25 +370,29 @@ void pollSequentialMeasurement() {
     bme.getData(data);
     if (!(data.status & BME68X_NEW_DATA_MSK)) continue;
 
+    uint8_t gi = data.gas_index;
+
+    /* Same wrap-around boundary detection as parallel mode */
+    if (lastGasIdx >= 0 && (int8_t)gi < lastGasIdx) {
+      if (cycleHasData && validateScanSize(prof.profileLen)) {
+        Serial.println("[Sequential] Complete " + String(prof.profileLen) +
+                       "-step scan — sequential-mode inference not yet implemented.");
+      }
+      cycleHasData = false;
+      resetGasBuffer(prof.profileLen);
+    }
+
     lastTemp = data.temperature;
     lastHum  = data.humidity;
     lastPres = data.pressure / 100.0f;
 
-    uint8_t gi       = data.gas_index;
-    bool    cycleEnd = (gi == (uint8_t)(prof.profileLen - 1));
-
     if ((data.status & GAS_VALID_MSK) == GAS_VALID_MSK) {
       gasBuffer[gi]   = data.gas_resistance;
       gasReceived[gi] = true;
+      cycleHasData    = true;
     }
 
-    if (cycleEnd) {
-      if (validateScanSize(prof.profileLen)) {
-        Serial.println("[Sequential] Complete " + String(prof.profileLen) +
-                       "-step scan — sequential-mode inference not yet implemented.");
-      }
-      resetGasBuffer(prof.profileLen);
-    }
+    lastGasIdx = (int8_t)gi;
   }
 }
 
@@ -392,7 +413,8 @@ void handleCommand(const String &cmd) {
       return;
     }
     const HeatingProfile &prof = PROFILES[activeProfile];
-    if (prof.profileLen > 0) resetGasBuffer(prof.profileLen);
+    cycleHasData = false;
+    if (prof.profileLen > 0) resetGasBuffer(prof.profileLen);  // also resets lastGasIdx
 
     if (prof.scanMode == SCAN_PARALLEL) {
       bme.setOpMode(BME68X_PARALLEL_MODE);
