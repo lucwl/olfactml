@@ -15,6 +15,11 @@
  *   Sequential mode — up to 10-step heater scan cycle with ODR sleep between
  *                     cycles. Same plotter output format as parallel mode.
  *
+ * Autostart:
+ *   Set AUTOSTART_ENABLED to 1 (near the top of the sketch) and fill in
+ *   AUTOSTART_PROFILES[], AUTOSTART_FILENAME, and AUTOSTART_LABEL.
+ *   The board will begin recording immediately on power-up — no commands needed.
+ *
  * Serial commands:
  *   plot              — stream the active sensor to Serial Plotter
  *   record [1 2 …]    — record one or more sensors simultaneously to SD card.
@@ -167,9 +172,46 @@ const HeatingProfile PROFILES[] = {
     {150, 150, 150, 150, 150, 150, 150, 150, 150, 150},
     BME68X_ODR_500_MS
   },
+  {
+    "Seq_Bosch",
+    "[S] Bosch 10-step: 320,100x3,200x3,320x3 C / 150 ms each, 500 ms ODR sleep",
+    SCAN_SEQUENTIAL, 0, 0, 10,
+    {320, 100, 100, 100, 200, 200, 200, 320, 320, 320},
+    {150, 150, 150, 150, 150, 150, 150, 150, 150, 150},
+    BME68X_ODR_500_MS
+  },
+  {
+    "Seq_WideSweep",
+    "[S] Wide sweep 100->450 C (10 steps, longer dwell at low temps, 500 ms ODR sleep)",
+    SCAN_SEQUENTIAL, 0, 0, 10,
+    {100, 150, 200, 250, 300, 325, 350, 380, 415, 450},
+    {200, 180, 160, 150, 150, 140, 140, 140, 140, 140},
+    BME68X_ODR_500_MS
+  },
 };
 
 const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Autostart preset  ← edit this section to configure power-on recording
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * Set AUTOSTART_ENABLED to 1 and fill in the three settings below.
+ * The board will open the SD file and start recording immediately after
+ * power-up — no serial commands required.
+ * Set AUTOSTART_ENABLED to 0 to use interactive commands as normal.
+ *
+ * AUTOSTART_PROFILES[8]
+ *   One entry per sensor slot (index 0 = sensor 1, … index 7 = sensor 8).
+ *   Value = 1-based profile ID  (send 'profiles' over Serial to list them).
+ *   Set an entry to 0 to exclude that sensor from the recording.
+ *
+ */
+#define AUTOSTART_ENABLED 0
+
+static const uint8_t AUTOSTART_PROFILES[8] = {9, 10, 11, 12,  0,  0,  0,  0};
+static const char    AUTOSTART_FILENAME[]   = "rose_open_container";
+static const char    AUTOSTART_LABEL[]      = "rose";
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Global state
@@ -335,6 +377,30 @@ void setup() {
   Serial.println("          profile <N> | profiles | filename <name> | label <text> | status");
   Serial.println("Active: sensor 1, profile 1 [Forced_Std]");
   Serial.println("File  : " + recordFilename + ".csv   Label: " + recordLabel);
+
+#if AUTOSTART_ENABLED
+  /* Apply the autostart preset and begin recording immediately. */
+  Serial.println("Autostart preset active — starting recording...");
+  recordFilename = AUTOSTART_FILENAME;
+  recordLabel    = AUTOSTART_LABEL;
+  recordSensorCount = 0;
+  for (uint8_t i = 0; i < 8; i++) {
+    if (AUTOSTART_PROFILES[i] == 0) continue;
+    uint8_t profIdx = (uint8_t)(AUTOSTART_PROFILES[i] - 1);
+    if (profIdx >= NUM_PROFILES) {
+      Serial.println("  Sensor " + String(i + 1) + ": invalid profile " +
+                     String(AUTOSTART_PROFILES[i]) + " — skipped.");
+      continue;
+    }
+    sensorProfile[i] = profIdx;
+    recordSensors[recordSensorCount++] = i;
+  }
+  if (recordSensorCount > 0) {
+    startRecording();
+  } else {
+    Serial.println("  No valid sensors in preset — staying idle.");
+  }
+#endif
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -583,6 +649,44 @@ void pollSequentialMeasurement(uint8_t si) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
+ * Recording start helper
+ * Assumes recordSensors[], recordSensorCount, recordFilename, recordLabel
+ * are already set.  Opens the SD file, arms all sensors, sets RECORDING.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+void startRecording() {
+  if (!sdOpenFile(recordFilename)) {
+    Serial.println(">> Recording aborted — SD card error.");
+    return;
+  }
+
+  for (uint8_t i = 0; i < recordSensorCount; i++) {
+    uint8_t si = recordSensors[i];
+    initSensor(si);
+    fingerprintIndex[si] = 0;
+    cycleHasData[si]     = false;
+    const HeatingProfile &prof = PROFILES[sensorProfile[si]];
+    if (prof.scanMode == SCAN_PARALLEL) {
+      resetGasBuffer(si, prof.profileLen);
+      bme.setOpMode(BME68X_PARALLEL_MODE);
+    } else if (prof.scanMode == SCAN_SEQUENTIAL) {
+      resetGasBuffer(si, prof.profileLen);
+      bme.setOpMode(BME68X_SEQUENTIAL_MODE);
+    }
+    /* Forced-mode sensors are triggered individually in the loop. */
+  }
+
+  mode = RECORDING;
+
+  Serial.print(">> Recording sensors:");
+  for (uint8_t i = 0; i < recordSensorCount; i++) {
+    Serial.print(" " + String(recordSensors[i] + 1) +
+                 "[" + String(PROFILES[sensorProfile[recordSensors[i]]].name) + "]");
+  }
+  Serial.println("  file=" + recordFilename + ".csv  label=" + recordLabel);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
  * Command handling
  * ═══════════════════════════════════════════════════════════════════════ */
 
@@ -635,36 +739,7 @@ void handleCommand(const String &cmd) {
       recordSensorCount = 1;
     }
 
-    if (!sdOpenFile(recordFilename)) {
-      Serial.println(">> Recording aborted — SD card error.");
-      return;
-    }
-
-    /* Initialise and start each recording sensor */
-    for (uint8_t i = 0; i < recordSensorCount; i++) {
-      uint8_t si = recordSensors[i];
-      initSensor(si);               // (re)configure; leaves commSetup on si
-      fingerprintIndex[si] = 0;
-      cycleHasData[si]     = false;
-      const HeatingProfile &prof = PROFILES[sensorProfile[si]];
-      if (prof.scanMode == SCAN_PARALLEL) {
-        resetGasBuffer(si, prof.profileLen);
-        bme.setOpMode(BME68X_PARALLEL_MODE);
-      } else if (prof.scanMode == SCAN_SEQUENTIAL) {
-        resetGasBuffer(si, prof.profileLen);
-        bme.setOpMode(BME68X_SEQUENTIAL_MODE);
-      }
-      /* Forced-mode sensors are triggered individually in the loop. */
-    }
-
-    mode = RECORDING;
-
-    Serial.print(">> Recording sensors:");
-    for (uint8_t i = 0; i < recordSensorCount; i++) {
-      Serial.print(" " + String(recordSensors[i] + 1) +
-                   "[" + String(PROFILES[sensorProfile[recordSensors[i]]].name) + "]");
-    }
-    Serial.println("  file=" + recordFilename + ".csv  label=" + recordLabel);
+    startRecording();
 
   /* ── stop ──────────────────────────────────────────────────────────── */
   } else if (cmd == "stop") {
