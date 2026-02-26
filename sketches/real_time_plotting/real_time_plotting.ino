@@ -215,6 +215,31 @@ uint32_t fingerprintIndex[8] = {0};
  * Prevents invalid cycle-end events from silently bumping the index. */
 bool cycleHasData[8] = {false};
 
+/* ── Row ring buffer ────────────────────────────────────────────────────
+ * Sensor polls push rows here; the main loop flushes them to SD after all
+ * sensors have been polled.  This keeps SD write latency from delaying the
+ * next sensor's poll.
+ *
+ * Size: 8 sensors × 10 steps = 80 rows worst-case per iteration; 128 gives
+ * comfortable headroom.  Each SdRow is ~28 bytes → ~3.5 KB total. */
+struct SdRow {
+  uint8_t  sensorNum;
+  uint32_t fpIdx;
+  uint8_t  pos;
+  uint16_t plateTemp;
+  uint16_t heatDur;
+  float    temperature;
+  float    pressure;
+  float    humidity;
+  float    gas;
+};
+
+#define ROW_BUFFER_SIZE 128
+static SdRow   rowBuffer[ROW_BUFFER_SIZE];
+static uint8_t rowHead  = 0;   // next write slot
+static uint8_t rowTail  = 0;   // next read slot
+static uint8_t rowCount = 0;
+
 /* LED blink state (1 Hz during recording) */
 uint32_t lastLedToggle = 0;
 bool     ledState      = false;
@@ -347,7 +372,6 @@ void printScanCycle(uint8_t si, uint8_t profileLen) {
 void verbosePrint(uint8_t sensorNum, uint32_t fpIdx, uint8_t pos,
                   uint16_t plateTemp, uint16_t heatDur,
                   float temp, float pres, float hum, float gas) {
-  if (sensorNum != 1) return;
   Serial.print("S"); Serial.print(sensorNum);
   Serial.print(" fp="); Serial.print(fpIdx);
   Serial.print(" pos="); Serial.print(pos);
@@ -358,6 +382,40 @@ void verbosePrint(uint8_t sensorNum, uint32_t fpIdx, uint8_t pos,
   Serial.print(" | plate="); Serial.print(plateTemp);
   Serial.print("C dur="); Serial.print(heatDur);
   Serial.println("ms");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Ring buffer helpers
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+void pushRow(uint8_t sensorNum, uint32_t fpIdx, uint8_t pos,
+             uint16_t plateTemp, uint16_t heatDur,
+             float temperature, float pressure, float humidity, float gas) {
+  if (rowCount >= ROW_BUFFER_SIZE) return;   // buffer full — drop row
+  SdRow &r    = rowBuffer[rowHead];
+  r.sensorNum  = sensorNum;
+  r.fpIdx      = fpIdx;
+  r.pos        = pos;
+  r.plateTemp  = plateTemp;
+  r.heatDur    = heatDur;
+  r.temperature = temperature;
+  r.pressure   = pressure;
+  r.humidity   = humidity;
+  r.gas        = gas;
+  rowHead = (rowHead + 1) % ROW_BUFFER_SIZE;
+  rowCount++;
+}
+
+/* Write every buffered row to the SD card and reset the buffer.
+ * Called once per main-loop iteration, after all sensors have been polled. */
+void flushRowBuffer() {
+  while (rowCount > 0) {
+    const SdRow &r = rowBuffer[rowTail];
+    sdLogRow(r.sensorNum, r.fpIdx, r.pos, r.plateTemp, r.heatDur,
+             r.temperature, r.pressure, r.humidity, r.gas, recordLabel);
+    rowTail = (rowTail + 1) % ROW_BUFFER_SIZE;
+    rowCount--;
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -383,16 +441,15 @@ void takeForcedMeasurement(uint8_t si) {
 
   if (mode == RECORDING) {
     const HeatingProfile &prof = PROFILES[sensorProfile[si]];
-    sdLogRow(si + 1,
-             fingerprintIndex[si],
-             0,                   // position — single step in forced mode
-             prof.forcedTemp,
-             prof.forcedDur,
-             data.temperature,
-             data.pressure / 100.0f,
-             data.humidity,
-             data.gas_resistance,
-             recordLabel);
+    pushRow(si + 1,
+            fingerprintIndex[si],
+            0,                   // position — single step in forced mode
+            prof.forcedTemp,
+            prof.forcedDur,
+            data.temperature,
+            data.pressure / 100.0f,
+            data.humidity,
+            data.gas_resistance);
     if (verboseMode) {
       verbosePrint(si + 1, fingerprintIndex[si], 0,
                    prof.forcedTemp, prof.forcedDur,
@@ -444,16 +501,15 @@ void pollParallelMeasurement(uint8_t si) {
         uint16_t heatDur = (uint16_t)(
           (uint32_t)prof.mulProf[gi] * sharedHeatrDur[si] / 63);
 
-        sdLogRow(si + 1,
-                 fingerprintIndex[si],
-                 gi,                    // position = heater step index
-                 prof.tempProf[gi],     // plate_temperature for this step
-                 heatDur,
-                 data.temperature,
-                 data.pressure / 100.0f,
-                 data.humidity,
-                 data.gas_resistance,
-                 recordLabel);
+        pushRow(si + 1,
+                fingerprintIndex[si],
+                gi,                    // position = heater step index
+                prof.tempProf[gi],     // plate_temperature for this step
+                heatDur,
+                data.temperature,
+                data.pressure / 100.0f,
+                data.humidity,
+                data.gas_resistance);
         if (verboseMode) {
           verbosePrint(si + 1, fingerprintIndex[si], gi,
                        prof.tempProf[gi], heatDur,
@@ -503,16 +559,15 @@ void pollSequentialMeasurement(uint8_t si) {
       if (mode == RECORDING) {
         uint16_t heatDur = prof.mulProf[gi];   // actual duration in sequential mode
 
-        sdLogRow(si + 1,
-                 fingerprintIndex[si],
-                 gi,
-                 prof.tempProf[gi],
-                 heatDur,
-                 data.temperature,
-                 data.pressure / 100.0f,
-                 data.humidity,
-                 data.gas_resistance,
-                 recordLabel);
+        pushRow(si + 1,
+                fingerprintIndex[si],
+                gi,
+                prof.tempProf[gi],
+                heatDur,
+                data.temperature,
+                data.pressure / 100.0f,
+                data.humidity,
+                data.gas_resistance);
         if (verboseMode) {
           verbosePrint(si + 1, fingerprintIndex[si], gi,
                        prof.tempProf[gi], heatDur,
@@ -775,6 +830,12 @@ void loop() {
     /* For multi-step sessions yield to the ESP32 scheduler;
      * forced-mode measurements already include their own wait. */
     if (anyMultiStep) delay(10);
+
+    /* Write all rows collected this iteration to the SD card.
+     * Doing this after all sensor polls means SD latency no longer delays
+     * any sensor's poll — each sensor is read as soon as the previous one
+     * finishes its SPI transaction, not after its SD writes complete. */
+    flushRowBuffer();
   }
 
   updateLed();
