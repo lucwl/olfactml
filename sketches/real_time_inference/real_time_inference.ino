@@ -13,11 +13,15 @@
  *   Sequential mode — full scan cycle collected before inference.
  *                     (Multi-step model pending.)
  *
- * Current model (forced mode):
- *   Input [1, 6] → Dense(16, ReLU) → Dense(16, ReLU) → Dense(3, Softmax)
- *   Feature order: plate_temperature, heater_duration,
- *                  temperature (°C), pressure (hPa), humidity (%), gas_resistance (Ω)
- *   Classes: 0 — air | 1 — eucalyptus | 2 — lavender
+ * Supported models (swap model.h to switch):
+ *   Forced mode  — flat model: Input [1, 6] → Dense→Dense→Softmax
+ *   Parallel /
+ *   Sequential   — LSTM model: Input [1, SEQ_LEN, 6] → LSTM(16)→Dense→Softmax
+ *                  Trained with LSTM(unroll=True); converted via model_to_tflite.py.
+ *
+ *   Feature order (both models, per timestep for LSTM):
+ *     plate_temperature, heater_duration, temperature (°C),
+ *     pressure (hPa), humidity (%), gas_resistance (Ω)
  *
  * Serial commands:
  *   run               — start continuous inference
@@ -120,19 +124,22 @@ const HeatingProfile PROFILES[] = {
 };
 
 const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
+const uint8_t TEMP_SEQ_IDX = 6;
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Model / class configuration
  * ═══════════════════════════════════════════════════════════════════════ */
 
 /* Tensor arena — must be large enough for all intermediate tensors.
- * This model (6→16→16→3 float32) fits comfortably within 10 kB. */
-constexpr int kTensorArenaSize = 10 * 1024;
+ * Flat dense model (6→16→16→3): ~10 kB is sufficient.
+ * LSTM model (SEQ_LEN×6 → LSTM(16) → 16 → N): needs ~20 kB for the
+ * unrolled cell activations and intermediate buffers. */
+constexpr int kTensorArenaSize = 32 * 1024;
 
-constexpr int NUM_CLASSES  = 2;
-constexpr int NUM_FEATURES = 6;   // plate_temp, heater_dur, temp, pressure, hum, gas
+constexpr int NUM_CLASSES  = 4;
+constexpr int NUM_FEATURES = 4;   // temp, pressure, hum, gas
 
-const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "eucalyptus"}; //"lavender" };
+const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "basil", "cinnamon", "rosemary"};
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Globals
@@ -158,17 +165,36 @@ String cmdBuffer = "";
 
 /* TFLite Micro objects in static storage (required by the runtime) */
 alignas(16) static uint8_t tensor_arena[kTensorArenaSize];
-static tflite::MicroMutableOpResolver<2> resolver;
+/* Op set for an unrolled LSTM (keras LSTM(unroll=True)) converted to TFLite
+ * with a fixed batch size of 1 (model_to_tflite.py traces via concrete_fn).
+ *
+ * Fixing batch=1 constant-folds the zero-state SHAPE→FILL chain away, so
+ * neither Shape nor Fill appears in the flatbuffer.  Remaining primitive ops:
+ *
+ *   Unpack         — tf.unstack: split [1,SEQ_LEN,F] into SEQ_LEN × [1,F]
+ *   FullyConnected — kernel + recurrent kernel matmuls (4 gates per step)
+ *   Add            — bias add, cell-state accumulation
+ *   Split          — separate the 4 concatenated gate outputs
+ *   Mul            — element-wise gate products  (f·c, i·g, o·tanh(c))
+ *   Logistic       — sigmoid — i, f, o gates
+ *   Tanh           — tanh   — g gate, cell output
+ *   Softmax        — final classification head
+ *
+ * StridedSlice / Pack / Transpose registered as safety net — TF version
+ * differences may emit them; they add negligible flash overhead. */
+static tflite::MicroMutableOpResolver<12> resolver;
 static tflite::MicroInterpreter* interpreter = nullptr;
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Helpers
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* z-score:  z = (x − μ) / σ
+/* z-score:  z = (x − μ) / σ  per heater step and feature index.
+ * FEATURE_MEAN / FEATURE_STD are 2-D: [heater_step][feature].
+ * Forced mode always uses step = 0  (STATS_SEQ_LEN == 1).
  * Only called for features with a non-zero std dev. */
-inline float standardise(float value, int idx) {
-  return (value - FEATURE_MEAN[idx]) / FEATURE_STD[idx];
+inline float standardise(float value, int step, int feat) {
+  return (value - FEATURE_MEAN[step][feat]) / FEATURE_STD[step][feat];
 }
 
 void resetGasBuffer(uint8_t len) {
@@ -204,8 +230,8 @@ bool validateScanSize(uint8_t profileLen) {
 void runForcedInference(const HeatingProfile &prof, const bme68xData &data) {
   /* Build raw feature vector matching training feature order. */
   const float raw[NUM_FEATURES] = {
-    (float)prof.forcedTemp,    // plate_temperature (passed as-is)
-    (float)prof.forcedDur,     // heater_duration   (passed as-is)
+    // (float)prof.forcedTemp,    // plate_temperature (passed as-is)
+    // (float)prof.forcedDur,     // heater_duration   (passed as-is)
     data.temperature,          // standardised
     data.pressure / 100.0f,    // standardised
     data.humidity,             // standardised
@@ -214,9 +240,103 @@ void runForcedInference(const HeatingProfile &prof, const bme68xData &data) {
 
   TfLiteTensor* inp = interpreter->input(0);
   for (int i = 0; i < NUM_FEATURES; i++) {
-    /* Standardise only features that have a non-zero training std dev
-     * (indices 0 and 1 have FEATURE_STD == 0 and are passed as-is). */
-    inp->data.f[i] = (FEATURE_STD[i] != 0.0f) ? standardise(raw[i], i) : raw[i];
+    /* Forced mode always uses heater-step 0 (STATS_SEQ_LEN == 1 in statistics.h). */
+    inp->data.f[i] = (FEATURE_STD[0][i] != 0.0f) ? standardise(raw[i], 0, i) : raw[i];
+  }
+
+  if (interpreter->Invoke() != kTfLiteOk) {
+    Serial.println("ERR: Invoke() failed.");
+    return;
+  }
+
+  TfLiteTensor* out = interpreter->output(0);
+  int   predicted = 0;
+  float best      = out->data.f[0];
+  for (int i = 1; i < NUM_CLASSES; i++) {
+    if (out->data.f[i] > best) { best = out->data.f[i]; predicted = i; }
+  }
+
+  Serial.print("Prediction: ");
+  Serial.print(CLASS_LABELS[predicted]);
+  Serial.print("  (");
+  Serial.print(best * 100.0f, 1);
+  Serial.print("%)  scores: [");
+  for (int i = 0; i < NUM_CLASSES; i++) {
+    Serial.print(CLASS_LABELS[i]);
+    Serial.print("=");
+    Serial.print(out->data.f[i] * 100.0f, 1);
+    Serial.print("%");
+    if (i < NUM_CLASSES - 1) Serial.print("  ");
+  }
+  Serial.println("]");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Inference  (parallel / sequential mode — LSTM / recurrent model)
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Fills the model input tensor from one complete scan cycle and runs the
+ * recurrent (LSTM) model.
+ *
+ * Expected input shape: [1, SEQ_LEN, NUM_FEATURES]
+ *   flat layout: inp->data.f[ t * NUM_FEATURES + i ]
+ *
+ * Feature order per timestep (matches training FEATURE_COLS_EXTENDED):
+ *   [0] plate_temperature   — pass-through  (prof.tempProf[t])
+ *   [1] heater_duration     — pass-through
+ *         parallel:   sharedHeatrDur * prof.mulProf[t]
+ *         sequential: prof.mulProf[t]  (already in ms)
+ *   [2] temperature (°C)    — standardised  (lastTemp, shared across steps)
+ *   [3] pressure (hPa)      — standardised  (lastPres, already /100)
+ *   [4] humidity (%)        — standardised  (lastHum,  shared across steps)
+ *   [5] gas_resistance (Ω)  — standardised  (gasBuffer[t])
+ *
+ * Standardisation and output printing are identical to runForcedInference. */
+void runSequentialInference(const HeatingProfile &prof) {
+  TfLiteTensor* inp = interpreter->input(0);
+
+  /* Validate that the profile length matches the model's expected SEQ_LEN.
+   * inp->dims: [batch=1, seq_len, features] */
+  if (inp->dims->size != 3) {
+    Serial.println("[WARN] runSequentialInference: loaded model is not a sequence model "
+                   "(expected 3-D input). Use runForcedInference for flat models.");
+    return;
+  }
+  const int modelSeqLen = inp->dims->data[1];
+  if ((int)prof.profileLen != modelSeqLen) {
+    Serial.print("[WARN] Profile has ");
+    Serial.print(prof.profileLen);
+    Serial.print(" steps but model expects SEQ_LEN=");
+    Serial.print(modelSeqLen);
+    Serial.println(". Dropping cycle — select a matching profile.");
+    return;
+  }
+
+  /* Build the [SEQ_LEN, NUM_FEATURES] input, standardising as in forced mode. */
+  for (uint8_t t = 0; t < prof.profileLen; t++) {
+    // float heatDur = (prof.scanMode == SCAN_PARALLEL)
+    //                 ? (float)(sharedHeatrDur * prof.mulProf[t])
+    //                 : (float)prof.mulProf[t];
+
+    const float raw[NUM_FEATURES] = {
+      // (float)prof.tempProf[t],  // plate_temperature (pass-through)
+      // heatDur,                  // heater_duration   (pass-through)
+      lastTemp,                 // temperature       (standardised)
+      lastPres,                 // pressure          (standardised, already /100)
+      lastHum,                  // humidity          (standardised)
+      gasBuffer[t],             // gas_resistance    (standardised)
+    };
+
+    Serial.print("Input array: ");
+    int base = t * NUM_FEATURES;
+    for (int i = 0; i < NUM_FEATURES; i++) {
+      /* Use per-step statistics: each heater temperature has its own mean/std. */
+      inp->data.f[base + i] = (FEATURE_STD[t][i] != 0.0f) ? standardise(raw[i], t, i) : raw[i];
+      Serial.print(" ");
+      Serial.print(inp->data.f[base + i]);
+      Serial.print(" ");
+    }
+    Serial.println();
   }
 
   if (interpreter->Invoke() != kTfLiteOk) {
@@ -335,8 +455,8 @@ void pollParallelMeasurement() {
     /* Wrap-around boundary detection (same logic as real_time_plotting) */
     if (lastGasIdx >= 0 && (int8_t)gi < lastGasIdx) {
       if (cycleHasData && validateScanSize(prof.profileLen)) {
-        Serial.println("[Parallel] Complete " + String(prof.profileLen) +
-                       "-step scan — parallel-mode inference not yet implemented.");
+        Serial.print("[Parallel] Complete " + String(prof.profileLen) + "-step scan — ");
+        runSequentialInference(prof);
       }
       cycleHasData = false;
       resetGasBuffer(prof.profileLen);
@@ -375,8 +495,8 @@ void pollSequentialMeasurement() {
     /* Same wrap-around boundary detection as parallel mode */
     if (lastGasIdx >= 0 && (int8_t)gi < lastGasIdx) {
       if (cycleHasData && validateScanSize(prof.profileLen)) {
-        Serial.println("[Sequential] Complete " + String(prof.profileLen) +
-                       "-step scan — sequential-mode inference not yet implemented.");
+        Serial.print("[Sequential] Complete " + String(prof.profileLen) + "-step scan — ");
+        runSequentialInference(prof);
       }
       cycleHasData = false;
       resetGasBuffer(prof.profileLen);
@@ -497,7 +617,7 @@ void setup() {
   Serial.println("Sensor OK (index " + String(sensorIdx + 1) + ")");
 
   /* ── TFLite Micro ────────────────────────────────────────────────── */
-  const tflite::Model* tfl_model = tflite::GetModel(model);
+  const tflite::Model* tfl_model = tflite::GetModel(g_model);
 
   if (tfl_model->version() != TFLITE_SCHEMA_VERSION) {
     Serial.println("ERR: Model schema version mismatch ("
@@ -506,8 +626,19 @@ void setup() {
     while (1);
   }
 
-  resolver.AddFullyConnected();
-  resolver.AddSoftmax();
+  resolver.AddUnpack();                      // unstack sequence into timesteps
+  resolver.AddFullyConnected();              // gate matmuls + Dense layers
+  resolver.AddAdd();                         // bias add, cell-state accumulation
+  resolver.AddSplit();                       // separate 4 gate outputs
+  resolver.AddMul();                         // element-wise gate products
+  resolver.AddLogistic();                    // sigmoid — i, f, o gates
+  resolver.AddTanh();                        // tanh   — g gate, cell output
+  resolver.AddSoftmax();                     // final classification head
+  // Safety net — some TF versions emit these for sequence handling:
+  resolver.AddStridedSlice();
+  resolver.AddPack();
+  resolver.AddTranspose();
+  resolver.AddReshape();
 
   static tflite::MicroInterpreter static_interpreter(
       tfl_model, resolver, tensor_arena, kTensorArenaSize);
@@ -520,8 +651,12 @@ void setup() {
 
   TfLiteTensor* inp = interpreter->input(0);
   TfLiteTensor* out = interpreter->output(0);
-  Serial.println("Model OK  |  input "
-                 + String(inp->dims->data[0]) + "x" + String(inp->dims->data[1])
+  String inpShape = "";
+  for (int d = 0; d < inp->dims->size; d++) {
+    if (d > 0) inpShape += "x";
+    inpShape += String(inp->dims->data[d]);
+  }
+  Serial.println("Model OK  |  input " + inpShape
                  + "  output "
                  + String(out->dims->data[0]) + "x" + String(out->dims->data[1]));
   Serial.println("Arena used: " + String(interpreter->arena_used_bytes()) +
