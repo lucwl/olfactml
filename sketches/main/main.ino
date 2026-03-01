@@ -29,6 +29,9 @@
  *   profiles          — list all available profiles
  *   sensors [list]    — show or set active sensors, e.g. "sensors 1,2,3"
  *   status            — show current state
+ *   logfile [<name>]  — show or set the SD log filename (default: inference_log)
+ *   logstart          — begin logging model inputs to SD card CSV
+ *   logstop           — stop SD logging (inference continues unaffected)
  *
  * Hardware: Bosch BME688 Development Kit (Adafruit ESP32 Feather +
  *           8-sensor SPI board via I2C GPIO expander).
@@ -39,6 +42,8 @@
 #include "commMux.h"
 #include "model.h"
 #include "statistics.h"
+
+#include "inferenceLogger.h"
 
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -203,6 +208,20 @@ uint32_t timingCount      = 0;
 uint64_t timingCollectSum = 0;  // ms
 uint64_t timingInferSum   = 0;  // us
 
+/* ─── SD inference log ─────────────────────────────────────────────────
+ * Debugging feature: logs the exact averaged & standardised input tensor
+ * that is fed to the model at each inference.  Entirely optional — set or
+ * clear ilLogging with the 'logstart' / 'logstop' commands.  Inference
+ * runs unchanged regardless of whether logging is active. */
+bool   ilLogging  = false;
+String ilFilename = "inference_log";
+
+/* ─── Imputation ───────────────────────────────────────────────────────
+ * When true, missing gas steps at wrap-around are filled from peer sensors
+ * (or from the historical training mean when no peer data exists) instead
+ * of dropping the cycle.  Toggle with 'impute on' / 'impute off'. */
+bool imputationEnabled = true;
+
 String cmdBuffer = "";
 
 /* TFLite Micro */
@@ -248,6 +267,58 @@ bool validateSensorScan(uint8_t s, uint8_t profileLen) {
     return false;
   }
   return true;
+}
+
+/* Fill any missing gas steps for sensor s by averaging live data from peer
+ * sensors still on the same cycle, then freeze the fingerprint normally.
+ *
+ * Priority:
+ *   1. Mean of sensorStates[o].gasBuffer[t] / gasDiffBuffer[t] for peers o
+ *      that still carry valid (not-yet-reset) data for step t.
+ *   2. Historical training mean FEATURE_MEAN[t][feat] (statistics.h) as
+ *      a z-score = 0 neutral fallback when no peer data is available.
+ *
+ * Correctness note: resetSensorGasBuffer() sets gasReceived[] to false, so
+ * peers that have already wrapped are automatically excluded by the
+ * gasReceived[t] check — no extra synchronisation is needed. */
+void imputeMissingSensorSteps(uint8_t s, uint8_t profileLen) {
+  SensorState &ss = sensorStates[s];
+  uint8_t imputedCount = 0;
+
+  for (uint8_t t = 0; t < profileLen; t++) {
+    if (ss.gasReceived[t]) continue;
+
+    float gasSum = 0.0f, diffSum = 0.0f;
+    uint8_t validPeers = 0;
+    for (uint8_t o = 0; o < numActiveSensors; o++) {
+      if (o == s) continue;
+      if (sensorStates[o].gasReceived[t]) {
+        gasSum  += sensorStates[o].gasBuffer[t];
+        diffSum += sensorStates[o].gasDiffBuffer[t];
+        validPeers++;
+      }
+    }
+
+    if (validPeers > 0) {
+      ss.gasBuffer[t]     = gasSum  / validPeers;
+      ss.gasDiffBuffer[t] = diffSum / validPeers;
+    } else {
+      ss.gasBuffer[t]     = FEATURE_MEAN[t][0];  // gas_resistance mean
+      ss.gasDiffBuffer[t] = FEATURE_MEAN[t][1];  // gas_resistance_diff mean
+    }
+    ss.gasReceived[t] = true;
+    imputedCount++;
+  }
+
+  if (imputedCount > 0) {
+    Serial.print("[IMPUTE] Sensor ");
+    Serial.print(activeSensors[s] + 1);
+    Serial.print(": imputed ");
+    Serial.print(imputedCount);
+    Serial.print("/");
+    Serial.print(profileLen);
+    Serial.println(" step(s).");
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -328,6 +399,12 @@ void runAveragedInference() {
     inp->data.f[i] /= (float)numActiveSensors;
   }
 
+  /* SD debug log — record the averaged, standardised input tensor. */
+  if (ilLogging) {
+    const char *lbl = (currentLabel >= 0) ? CLASS_LABELS[currentLabel] : "none";
+    ilLog(inp->data.f, totalElems, lbl);
+  }
+
   /* Debug: print averaged input and per-step sensor variance for each feature. */
   for (uint8_t t = 0; t < prof.profileLen; t++) {
     Serial.print("Input[");
@@ -343,7 +420,8 @@ void runAveragedInference() {
       float mean = inp->data.f[base + i];
       float var  = sumSq[base + i] / (float)numActiveSensors - mean * mean;
       Serial.print(" ");
-      Serial.print(max(0.0f, var), 4);
+      // Serial.print(max(0.0f, var), 4);
+      Serial.print(var, 4);
     }
     Serial.println();
   }
@@ -418,17 +496,25 @@ void pollSensor(uint8_t s) {
       /* Only freeze if we haven't already frozen a fingerprint waiting for
        * other sensors. If fingerprintReady is already set, discard this
        * intermediate cycle without overwriting the frozen data. */
-      if (ss.cycleHasData && !ss.fingerprintReady &&
-          validateSensorScan(s, prof.profileLen)) {
-        memcpy(ss.fpGas,    ss.gasBuffer,    prof.profileLen * sizeof(float));
-        memcpy(ss.fpGasDiff, ss.gasDiffBuffer, prof.profileLen * sizeof(float));
-        ss.fpTemp     = ss.lastTemp;
-        ss.fpHum      = ss.lastHum;
-        ss.fpPres     = ss.lastPres;
-        ss.fpDiffTemp = ss.diffTemp;
-        ss.fpDiffHum  = ss.diffHum;
-        ss.fpDiffPres = ss.diffPres;
-        ss.fingerprintReady = true;
+      if (ss.cycleHasData && !ss.fingerprintReady) {
+        bool ok;
+        if (imputationEnabled) {
+          imputeMissingSensorSteps(s, prof.profileLen);
+          ok = true;
+        } else {
+          ok = validateSensorScan(s, prof.profileLen);
+        }
+        if (ok) {
+          memcpy(ss.fpGas,    ss.gasBuffer,    prof.profileLen * sizeof(float));
+          memcpy(ss.fpGasDiff, ss.gasDiffBuffer, prof.profileLen * sizeof(float));
+          ss.fpTemp     = ss.lastTemp;
+          ss.fpHum      = ss.lastHum;
+          ss.fpPres     = ss.lastPres;
+          ss.fpDiffTemp = ss.diffTemp;
+          ss.fpDiffHum  = ss.diffHum;
+          ss.fpDiffPres = ss.diffPres;
+          ss.fingerprintReady = true;
+        }
       }
       ss.cycleHasData = false;
       resetSensorGasBuffer(s, prof.profileLen);
@@ -548,13 +634,21 @@ void takeForcedMeasurements() {
     inp->data.f[i] /= (float)validCount;
   }
 
+  /* SD debug log — record the averaged, standardised input vector. */
+  if (ilLogging) {
+    const char *lbl = (currentLabel >= 0) ? CLASS_LABELS[currentLabel] : "none";
+    ilLog(inp->data.f, NUM_FEATURES, lbl);
+  }
+
   /* Sensor variance per feature (in standardised space). */
   Serial.print("Var:");
   for (int i = 0; i < NUM_FEATURES; i++) {
     float mean = inp->data.f[i];
     float var  = sumSq[i] / (float)validCount - mean * mean;
     Serial.print(" ");
-    Serial.print(max(0.0f, var), 4);
+    // Serial.print(max(0.0f, var), 4);
+    Serial.print(var, 4);
+
   }
   Serial.println();
 
@@ -963,12 +1057,71 @@ void handleCommand(const String &cmd) {
     } else {
       Serial.println("Label   : (none)");
     }
+    Serial.println("Impute  : " + String(imputationEnabled ? "ON" : "OFF"));
+
+  /* ── logfile [<name>] ──────────────────────────────────────────────── */
+  } else if (cmd == "logfile") {
+    Serial.println(">> Log file : " + ilFilename + ".csv");
+    Serial.println("   Logging  : " + String(ilLogging ? "active" : "stopped"));
+    Serial.println("   Use 'logfile <name>' to change filename (while not logging).");
+
+  } else if (cmd.startsWith("logfile ")) {
+    if (ilLogging) {
+      Serial.println(">> Stop logging first ('logstop').");
+      return;
+    }
+    ilFilename = cmd.substring(8);
+    ilFilename.trim();
+    Serial.println(">> Log filename set to: " + ilFilename + ".csv");
+
+  /* ── logstart ───────────────────────────────────────────────────────
+   * Opens the CSV file and enables per-inference logging.
+   * The number of input columns is derived from the current profile so
+   * the header matches the data.  Change the profile before 'logstart',
+   * not after, to keep the file consistent. */
+  } else if (cmd == "logstart") {
+    if (ilLogging) {
+      Serial.println(">> Already logging. Send 'logstop' first.");
+      return;
+    }
+    const HeatingProfile &prof = PROFILES[activeProfile];
+    int numInputs = (prof.scanMode == SCAN_FORCED)
+                    ? NUM_FEATURES
+                    : (int)prof.profileLen * NUM_FEATURES;
+    if (ilOpen(ilFilename, numInputs)) {
+      ilLogging = true;
+      Serial.println(">> SD logging started — " + ilFilename + ".csv" +
+                     "  (" + String(numInputs) + " inputs/row).");
+    }
+
+  /* ── logstop ────────────────────────────────────────────────────────── */
+  } else if (cmd == "logstop") {
+    if (!ilLogging) {
+      Serial.println(">> Not logging.");
+      return;
+    }
+    ilClose();
+    ilLogging = false;
+
+  /* ── impute [on|off] ────────────────────────────────────────────────── */
+  } else if (cmd == "impute") {
+    Serial.println(">> Imputation: " + String(imputationEnabled ? "ON" : "OFF"));
+    Serial.println("   Use 'impute on' or 'impute off' to toggle.");
+
+  } else if (cmd == "impute on") {
+    imputationEnabled = true;
+    Serial.println(">> Imputation enabled — missing steps filled from peer sensors.");
+
+  } else if (cmd == "impute off") {
+    imputationEnabled = false;
+    Serial.println(">> Imputation disabled — incomplete cycles dropped (original behaviour).");
 
   /* ── unknown ───────────────────────────────────────────────────────── */
   } else {
     Serial.println(">> Unknown: '" + cmd + "'");
     Serial.println("   Commands: run | stop | clean [<sec>] | profile <N> | profiles");
     Serial.println("             sensors [list] | label [N] | accuracy | timing [reset] | status");
+    Serial.println("             logfile [<name>] | logstart | logstop | impute [on|off]");
   }
 }
 
@@ -982,6 +1135,7 @@ void setup() {
 
   commMuxBegin(Wire, SPI);
   delay(100);
+  ilInit();
 
   if (!initSensors()) {
     Serial.println("Halting.");
@@ -1051,6 +1205,7 @@ void setup() {
   Serial.println("Active profile: 1 [" + String(PROFILES[0].name) + "]");
   Serial.println("Commands: run | stop | clean [<sec>] | profile <N> | profiles");
   Serial.println("          sensors [list] | label [N] | accuracy | timing [reset] | status");
+  Serial.println("          logfile [<name>] | logstart | logstop | impute [on|off]");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
