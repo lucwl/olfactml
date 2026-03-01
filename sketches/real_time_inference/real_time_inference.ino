@@ -136,10 +136,10 @@ const uint8_t TEMP_SEQ_IDX = 6;
  * unrolled cell activations and intermediate buffers. */
 constexpr int kTensorArenaSize = 32 * 1024;
 
-constexpr int NUM_CLASSES  = 4;
-constexpr int NUM_FEATURES = 4;   // temp, pressure, hum, gas
+constexpr int NUM_CLASSES  = 5;
+constexpr int NUM_FEATURES = 8;   // temp, pressure, hum, gas
 
-const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "basil", "cinnamon", "rosemary"};
+const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "basil", "cinnamon", "oregano", "rosemary"};
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Globals
@@ -156,8 +156,9 @@ bool running = false;
 
 /* Scan-cycle accumulation (parallel / sequential modes) */
 float   gasBuffer[10];
+float   gasDiffBuffer[10];
 bool    gasReceived[10];
-float   lastTemp = 0, lastHum = 0, lastPres = 0;
+float   lastTemp = 0, lastHum = 0, lastPres = 0, diffTemp = 0, diffHum = 0, diffPres = 0;
 int8_t  lastGasIdx  = -1;   // gas_index of the last received field (-1 = none yet)
 bool    cycleHasData = false; // true when ≥1 valid gas step received this cycle
 
@@ -182,11 +183,11 @@ alignas(16) static uint8_t tensor_arena[kTensorArenaSize];
  *
  * StridedSlice / Pack / Transpose registered as safety net — TF version
  * differences may emit them; they add negligible flash overhead. */
-static tflite::MicroMutableOpResolver<12> resolver;
+static tflite::MicroMutableOpResolver<5> resolver;
 static tflite::MicroInterpreter* interpreter = nullptr;
 
 /* ═══════════════════════════════════════════════════════════════════════
- * Helpers
+ * Preprocessing
  * ═══════════════════════════════════════════════════════════════════════ */
 
 /* z-score:  z = (x − μ) / σ  per heater step and feature index.
@@ -196,6 +197,13 @@ static tflite::MicroInterpreter* interpreter = nullptr;
 inline float standardise(float value, int step, int feat) {
   return (value - FEATURE_MEAN[step][feat]) / FEATURE_STD[step][feat];
 }
+
+
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Helpers
+ * ═══════════════════════════════════════════════════════════════════════ */
 
 void resetGasBuffer(uint8_t len) {
   for (uint8_t i = 0; i < len; i++) {
@@ -325,6 +333,10 @@ void runSequentialInference(const HeatingProfile &prof) {
       lastPres,                 // pressure          (standardised, already /100)
       lastHum,                  // humidity          (standardised)
       gasBuffer[t],             // gas_resistance    (standardised)
+      diffTemp,                 // temperature       (standardised)
+      diffPres,                 // pressure          (standardised, already /100)
+      diffHum,                  // humidity          (standardised)
+      gasDiffBuffer[t],             // gas_resistance    (standardised)
     };
 
     Serial.print("Input array: ");
@@ -502,11 +514,16 @@ void pollSequentialMeasurement() {
       resetGasBuffer(prof.profileLen);
     }
 
+    diffTemp = (lastTemp == 0.0f) ? 0.0f :  (data.temperature - lastTemp);
+    diffHum = (lastHum == 0.0f) ? 0.0f :  (data.humidity - lastHum);
+    diffPres = (lastPres == 0.0f) ? 0.0f :  (data.pressure / 100.0f - lastPres);
+
     lastTemp = data.temperature;
     lastHum  = data.humidity;
     lastPres = data.pressure / 100.0f;
 
     if ((data.status & GAS_VALID_MSK) == GAS_VALID_MSK) {
+      gasDiffBuffer[gi] = (gi == 0) ? 0.0f : (gasReceived[gi - 1] ? (data.gas_resistance - gasBuffer[gi - 1]) : 0.0f); // note that this zeros out diffs right after a missed step
       gasBuffer[gi]   = data.gas_resistance;
       gasReceived[gi] = true;
       cycleHasData    = true;
@@ -626,19 +643,28 @@ void setup() {
     while (1);
   }
 
-  resolver.AddUnpack();                      // unstack sequence into timesteps
-  resolver.AddFullyConnected();              // gate matmuls + Dense layers
-  resolver.AddAdd();                         // bias add, cell-state accumulation
-  resolver.AddSplit();                       // separate 4 gate outputs
-  resolver.AddMul();                         // element-wise gate products
-  resolver.AddLogistic();                    // sigmoid — i, f, o gates
-  resolver.AddTanh();                        // tanh   — g gate, cell output
-  resolver.AddSoftmax();                     // final classification head
-  // Safety net — some TF versions emit these for sequence handling:
-  resolver.AddStridedSlice();
-  resolver.AddPack();
-  resolver.AddTranspose();
+  // OPS for LSTM
+  // resolver.AddUnpack();                      // unstack sequence into timesteps
+  // resolver.AddFullyConnected();              // gate matmuls + Dense layers
+  // resolver.AddAdd();                         // bias add, cell-state accumulation
+  // resolver.AddSplit();                       // separate 4 gate outputs
+  // resolver.AddMul();                         // element-wise gate products
+  // resolver.AddLogistic();                    // sigmoid — i, f, o gates
+  // resolver.AddTanh();                        // tanh   — g gate, cell output
+  // resolver.AddSoftmax();                     // final classification head
+  // // Safety net — some TF versions emit these for sequence handling:
+  // resolver.AddStridedSlice();
+  // resolver.AddPack();
+  // resolver.AddTranspose();
+  // resolver.AddReshape();
+
+  // OPS for CNN
   resolver.AddReshape();
+  resolver.AddConv2D();
+  resolver.AddMean();
+  resolver.AddFullyConnected();
+  resolver.AddSoftmax();
+
 
   static tflite::MicroInterpreter static_interpreter(
       tfl_model, resolver, tensor_arena, kTensorArenaSize);

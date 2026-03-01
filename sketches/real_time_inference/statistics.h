@@ -26,150 +26,230 @@
 constexpr int STATS_SEQ_LEN = 10;
 
 /* Per-step, per-feature mean  [heater_step][feature_index] */
-const float FEATURE_MEAN[STATS_SEQ_LEN][4] = {
+const float FEATURE_MEAN[STATS_SEQ_LEN][8] = {
     /* [320 °C] */
     {
-        28.3167f,  // temperature ()
-        1062.73f,  // pressure ()
-        44.601f,   // humidity ()
-        53425.4f  // gas_resistance ()
+        26.08f,
+        1065.74f,
+        44.48f,
+        67183.95f,
+        0.02f,
+        0.0f,
+        -0.01f,
+        -43262.77
     },
     /* [100 °C] */
     {
-        28.3311f,      // temperature ()
-        1062.9f,       // pressure ()
-        44.6094f,      // humidity ()
-        2.83375e+06f  // gas_resistance ()
+        26.08f,
+        1065.74f,
+        44.48f,
+        4146099.06f,
+        -0.01f,
+        -0.0f,
+        -0.02f,
+        1192454.7
     },
     /* [100 °C] */
     {
-        28.3311f,      // temperature ()
-        1062.9f,       // pressure ()
-        44.6094f,      // humidity ()
-        2.83375e+06f  // gas_resistance ()
+        26.08f,
+        1065.74f,
+        44.48f,
+        4146099.06f,
+        -0.01f,
+        -0.0f,
+        -0.02f,
+        1192454.7
     },
     /* [100 °C] */
     {
-        28.3311f,      // temperature ()
-        1062.9f,       // pressure ()
-        44.6094f,      // humidity ()
-        2.83375e+06f  // gas_resistance ()
+        26.08f,
+        1065.74f,
+        44.48f,
+        4146099.06f,
+        -0.01f,
+        -0.0f,
+        -0.02f,
+        1192454.7
     },
     /* [200 °C] */
     {
-        28.2576f,   // temperature ()
-        1062.8f,    // pressure ()
-        44.6358f,   // humidity ()
-        174560.0f  // gas_resistance ()
+        26.03f,
+        1065.74f,
+        44.48f,
+        266532.21f,
+        -0.01f,
+        -0.0f,
+        0.0f,
+        -1135905.93
     },
     /* [200 °C] */
     {
-        28.2576f,   // temperature ()
-        1062.8f,    // pressure ()
-        44.6358f,   // humidity ()
-        174560.0f  // gas_resistance ()
+        26.03f,
+        1065.74f,
+        44.48f,
+        266532.21f,
+        -0.01f,
+        -0.0f,
+        0.0f,
+        -1135905.93
     },
     /* [200 °C] */
     {
-        28.2576f,   // temperature ()
-        1062.8f,    // pressure ()
-        44.6358f,   // humidity ()
-        174560.0f  // gas_resistance ()
+        26.03f,
+        1065.74f,
+        44.48f,
+        266532.21f,
+        -0.01f,
+        -0.0f,
+        0.0f,
+        -1135905.93
     },
     /* [320 °C] */
     {
-        28.3167f,  // temperature ()
-        1062.73f,  // pressure ()
-        44.601f,   // humidity ()
-        53425.4f  // gas_resistance ()
+        26.08f,
+        1065.74f,
+        44.48f,
+        67183.95f,
+        0.02f,
+        0.0f,
+        -0.01f,
+        -43262.77
     },
     /* [320 °C] */
     {
-        28.3167f,  // temperature ()
-        1062.73f,  // pressure ()
-        44.601f,   // humidity ()
-        53425.4f  // gas_resistance ()
+        26.08f,
+        1065.74f,
+        44.48f,
+        67183.95f,
+        0.02f,
+        0.0f,
+        -0.01f,
+        -43262.77
     },
     /* [320 °C] */
     {
-        28.3167f,  // temperature ()
-        1062.73f,  // pressure ()
-        44.601f,   // humidity ()
-        53425.4f  // gas_resistance ()
+        26.08f,
+        1065.74f,
+        44.48f,
+        67183.95f,
+        0.02f,
+        0.0f,
+        -0.01f,
+        -43262.77
     },
 };
 
 /* Per-step, per-feature std   [heater_step][feature_index]  (0.0 = pass-through) */
-const float FEATURE_STD[STATS_SEQ_LEN][4] = {
+const float FEATURE_STD[STATS_SEQ_LEN][8] = {
     /* [320 °C] */
     {
-        2.70542f,  // temperature ()
-        38.8032f,  // pressure ()
-        7.32655f,  // humidity ()
-        20950.9f  // gas_resistance ()
+        4.79f,
+        38.66f,
+        7.14f,
+        29589.33f,
+        0.01f,
+        0.01f,
+        0.09f,
+        110646.94
     },
     /* [100 °C] */
     {
-        2.72169f,      // temperature ()
-        38.754f,       // pressure ()
-        7.34288f,      // humidity ()
-        1.95615e+06f  // gas_resistance ()
+        4.79f,
+        38.66f,
+        7.18f,
+        2977612.35f,
+        0.02f,
+        0.01f,
+        0.1f,
+        3113207.07
     },
     /* [100 °C] */
     {
-        2.72169f,      // temperature ()
-        38.754f,       // pressure ()
-        7.34288f,      // humidity ()
-        1.95615e+06f  // gas_resistance ()
+        4.79f,
+        38.66f,
+        7.18f,
+        2977612.35f,
+        0.02f,
+        0.01f,
+        0.1f,
+        3113207.07
     },
     /* [100 °C] */
     {
-        2.72169f,      // temperature ()
-        38.754f,       // pressure ()
-        7.34288f,      // humidity ()
-        1.95615e+06f  // gas_resistance ()
+        4.79f,
+        38.66f,
+        7.18f,
+        2977612.35f,
+        0.02f,
+        0.01f,
+        0.1f,
+        3113207.07
     },
     /* [200 °C] */
     {
-        2.71093f,   // temperature ()
-        38.7733f,   // pressure ()
-        7.34303f,   // humidity ()
-        111926.0f  // gas_resistance ()
+        4.79f,
+        38.65f,
+        7.15f,
+        184049.12f,
+        0.02f,
+        0.01f,
+        0.1f,
+        2118962.09
     },
     /* [200 °C] */
     {
-        2.71093f,   // temperature ()
-        38.7733f,   // pressure ()
-        7.34303f,   // humidity ()
-        111926.0f  // gas_resistance ()
+        4.79f,
+        38.65f,
+        7.15f,
+        184049.12f,
+        0.02f,
+        0.01f,
+        0.1f,
+        2118962.09
     },
     /* [200 °C] */
     {
-        2.71093f,   // temperature ()
-        38.7733f,   // pressure ()
-        7.34303f,   // humidity ()
-        111926.0f  // gas_resistance ()
+        4.79f,
+        38.65f,
+        7.15f,
+        184049.12f,
+        0.02f,
+        0.01f,
+        0.1f,
+        2118962.09
     },
     /* [320 °C] */
     {
-        2.70542f,  // temperature ()
-        38.8032f,  // pressure ()
-        7.32655f,  // humidity ()
-        20950.9f  // gas_resistance ()
+        4.79f,
+        38.66f,
+        7.14f,
+        29589.33f,
+        0.01f,
+        0.01f,
+        0.09f,
+        110646.94
     },
     /* [320 °C] */
     {
-        2.70542f,  // temperature ()
-        38.8032f,  // pressure ()
-        7.32655f,  // humidity ()
-        20950.9f  // gas_resistance ()
+        4.79f,
+        38.66f,
+        7.14f,
+        29589.33f,
+        0.01f,
+        0.01f,
+        0.09f,
+        110646.94
     },
     /* [320 °C] */
     {
-        2.70542f,  // temperature ()
-        38.8032f,  // pressure ()
-        7.32655f,  // humidity ()
-        20950.9f  // gas_resistance ()
+        4.79f,
+        38.66f,
+        7.14f,
+        29589.33f,
+        0.01f,
+        0.01f,
+        0.09f,
+        110646.94
     },
 };
 
