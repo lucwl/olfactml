@@ -3,8 +3,13 @@ module github.com/lucwl/olfactml/server
 go 1.24.5
 
 require (
+	github.com/dolthub/maphash v0.1.0 // indirect
+	github.com/go-chi/chi/v5 v5.2.5 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
+	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/lxzan/event_emitter v0.3.2 // indirect
+	github.com/lxzan/gws v1.8.9 // indirect
 	github.com/saltosystems/winrt-go v0.0.0-20240509164145-4f7860a3bd2b // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/soypat/cyw43439 v0.0.0-20250505012923-830110c8f4af // indirect
