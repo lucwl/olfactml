@@ -1,12 +1,12 @@
 /**
  * BLE
  * 
- * Connects to a server via BLE and sends a single byte
+ * Connects to a server via BLE and sends a sequence of integers 
  */
 #include <ArduinoBLE.h>
 
 BLEService customService("88aadeff-64a4-47ae-8798-7d7e51b24e55");
-BLECharacteristic dataCharacteristic("88aadeff-64a4-47ae-8798-7d7e51b24e55", BLERead | BLEWrite, 20);
+BLEIntCharacteristic dataCharacteristic("88aadeff-64a4-47ae-8798-7d7e51b24e56", BLERead | BLEWrite | BLENotify);
 
 void setup() {
   Serial.begin(9600);
@@ -33,21 +33,15 @@ void loop() {
     Serial.print("Connected to central: ");
     Serial.println(central.address());
 
+    uint32_t i = 0;
     while (central.connected()) {
-      if (dataCharacteristic.written()) {
-        const uint8_t* data = dataCharacteristic.value();
-        int length = dataCharacteristic.valueLength();
+      if (!dataCharacteristic.subscribed()) continue;
+      dataCharacteristic.writeValue(i);
+      Serial.print("Sent: ");
+      Serial.println(i);
+      i++;
+      delay(1000);
 
-        Serial.print("Received ");
-        Serial.print(length);
-        Serial.print(" bytes: ");
-
-        // Output bytes in transmission
-        for (int i = 0; i < length; i++) {
-          Serial.print((char)data[i]);
-        }
-        Serial.println();
-      }
     }
     Serial.print("Disconnected from central: ");
     Serial.println(central.address());
