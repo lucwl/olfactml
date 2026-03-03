@@ -32,6 +32,8 @@
  *   logfile [<name>]  — show or set the SD log filename (default: inference_log)
  *   logstart          — begin logging model inputs to SD card CSV
  *   logstop           — stop SD logging (inference continues unaffected)
+ *   config [<N>]      — collect N measurements (default 5) and store their
+ *                       average as the baseline (overwrites any previous baseline)
  *
  * Hardware: Bosch BME688 Development Kit (Adafruit ESP32 Feather +
  *           8-sensor SPI board via I2C GPIO expander).
@@ -56,80 +58,54 @@
 /* ─── Cleaning cycle parameters ────────────────────────────────────── */
 /* Duty cycle = CLEAN_DUR_MS / (CLEAN_DUR_MS + CLEAN_GAP_MS) = 200/4000 = 5%
  * Max recommended by Bosch datasheet: ~10%. One pulse every 4 s. */
-constexpr uint16_t CLEAN_TEMP_C  = 400;   /* heater setpoint during clean (°C) */
-constexpr uint16_t CLEAN_DUR_MS  = 200;   /* heater on-time per forced pulse (ms) */
-constexpr uint32_t CLEAN_GAP_MS  = 3800;  /* cool-down gap between pulses (ms) */
-constexpr uint32_t CLEAN_DEF_SEC = 30;    /* default cleaning duration (s) */
+constexpr uint16_t CLEAN_TEMP_C = 400;  /* heater setpoint during clean (°C) */
+constexpr uint16_t CLEAN_DUR_MS = 200;  /* heater on-time per forced pulse (ms) */
+constexpr uint32_t CLEAN_GAP_MS = 3800; /* cool-down gap between pulses (ms) */
+constexpr uint32_t CLEAN_DEF_SEC = 30;  /* default cleaning duration (s) */
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Heating profile definitions
  * ═══════════════════════════════════════════════════════════════════════ */
 
-enum ScanMode { SCAN_FORCED, SCAN_PARALLEL, SCAN_SEQUENTIAL };
+enum ScanMode { SCAN_FORCED,
+                SCAN_PARALLEL,
+                SCAN_SEQUENTIAL };
 
 struct HeatingProfile {
   const char *name;
   const char *description;
-  ScanMode    scanMode;
+  ScanMode scanMode;
   /* Forced mode */
-  uint16_t    forcedTemp;
-  uint16_t    forcedDur;
+  uint16_t forcedTemp;
+  uint16_t forcedDur;
   /* Parallel / Sequential mode */
-  uint8_t     profileLen;
-  uint16_t    tempProf[10];
-  uint16_t    mulProf[10];
+  uint8_t profileLen;
+  uint16_t tempProf[10];
+  uint16_t mulProf[10];
   /* Sequential mode only */
-  uint8_t     seqSleep;
+  uint8_t seqSleep;
 };
 
 const HeatingProfile PROFILES[] = {
 
   /* ── Forced mode ──────────────────────────────────────────────────── */
-  { "Forced_Std",    "[F] 320 C / 150 ms  (default)",
-    SCAN_FORCED, 320, 150, 0, {0}, {0}, 0 },
-  { "Forced_Low",    "[F] 200 C / 150 ms",
-    SCAN_FORCED, 200, 150, 0, {0}, {0}, 0 },
-  { "Forced_High",   "[F] 400 C / 200 ms",
-    SCAN_FORCED, 400, 200, 0, {0}, {0}, 0 },
+  { "Forced_Std", "[F] 320 C / 150 ms  (default)", SCAN_FORCED, 320, 150, 0, { 0 }, { 0 }, 0 },
+  { "Forced_Low", "[F] 200 C / 150 ms", SCAN_FORCED, 200, 150, 0, { 0 }, { 0 }, 0 },
+  { "Forced_High", "[F] 400 C / 200 ms", SCAN_FORCED, 400, 200, 0, { 0 }, { 0 }, 0 },
 
   /* ── Parallel mode ────────────────────────────────────────────────── */
-  { "Par_Bosch",     "[P] Bosch standard 10-step: 320,100,100,100,200,200,200,320,320,320 C",
-    SCAN_PARALLEL, 0, 0, 10,
-    {320, 100, 100, 100, 200, 200, 200, 320, 320, 320},
-    {  5,   2,  10,  30,   5,   5,   5,   5,   5,   5}, 0 },
-  { "Par_LinSweep",  "[P] Linear sweep  200 -> 400 C  (10 equal steps)",
-    SCAN_PARALLEL, 0, 0, 10,
-    {200, 222, 244, 267, 289, 311, 333, 356, 378, 400},
-    {  5,   5,   5,   5,   5,   5,   5,   5,   5,   5}, 0 },
-  { "Par_WideSweep", "[P] Wide sweep    100 -> 450 C  (10 steps)",
-    SCAN_PARALLEL, 0, 0, 10,
-    {100, 150, 200, 250, 300, 325, 350, 380, 415, 450},
-    { 10,   8,   7,   6,   5,   5,   5,   5,   5,   5}, 0 },
-  { "Par_HighFocus", "[P] High-temp     300 -> 450 C  (10 steps)",
-    SCAN_PARALLEL, 0, 0, 10,
-    {300, 317, 333, 350, 367, 383, 400, 417, 433, 450},
-    {  5,   5,   5,   5,   5,   5,   5,   5,   5,   5}, 0 },
-  { "Par_LowFocus",  "[P] Low-temp      100 -> 250 C  (10 steps)",
-    SCAN_PARALLEL, 0, 0, 10,
-    {100, 117, 133, 150, 167, 183, 200, 217, 233, 250},
-    { 10,   9,   8,   8,   7,   7,   6,   6,   6,   5}, 0 },
+  { "Par_Bosch", "[P] Bosch standard 10-step: 320,100,100,100,200,200,200,320,320,320 C", SCAN_PARALLEL, 0, 0, 10, { 320, 100, 100, 100, 200, 200, 200, 320, 320, 320 }, { 5, 2, 10, 30, 5, 5, 5, 5, 5, 5 }, 0 },
+  { "Par_LinSweep", "[P] Linear sweep  200 -> 400 C  (10 equal steps)", SCAN_PARALLEL, 0, 0, 10, { 200, 222, 244, 267, 289, 311, 333, 356, 378, 400 }, { 5, 5, 5, 5, 5, 5, 5, 5, 5, 5 }, 0 },
+  { "Par_WideSweep", "[P] Wide sweep    100 -> 450 C  (10 steps)", SCAN_PARALLEL, 0, 0, 10, { 100, 150, 200, 250, 300, 325, 350, 380, 415, 450 }, { 10, 8, 7, 6, 5, 5, 5, 5, 5, 5 }, 0 },
+  { "Par_HighFocus", "[P] High-temp     300 -> 450 C  (10 steps)", SCAN_PARALLEL, 0, 0, 10, { 300, 317, 333, 350, 367, 383, 400, 417, 433, 450 }, { 5, 5, 5, 5, 5, 5, 5, 5, 5, 5 }, 0 },
+  { "Par_LowFocus", "[P] Low-temp      100 -> 250 C  (10 steps)", SCAN_PARALLEL, 0, 0, 10, { 100, 117, 133, 150, 167, 183, 200, 217, 233, 250 }, { 10, 9, 8, 8, 7, 7, 6, 6, 6, 5 }, 0 },
 
   /* ── Sequential mode ──────────────────────────────────────────────── */
-  { "Seq_Std",       "[S] 100,200,320 C / 150 ms each, 250 ms ODR sleep",
-    SCAN_SEQUENTIAL, 0, 0, 3,
-    {100, 200, 320}, {150, 150, 150}, BME68X_ODR_250_MS },
-  { "Seq_LinSweep",  "[S] Linear sweep 200->400 C (10 steps / 150 ms each, 500 ms ODR sleep)",
-    SCAN_SEQUENTIAL, 0, 0, 10,
-    {200, 222, 244, 267, 289, 311, 333, 356, 378, 400},
-    {150, 150, 150, 150, 150, 150, 150, 150, 150, 150}, BME68X_ODR_500_MS },
-  { "Seq_Bosch",     "[S] Bosch 10-step: 320,100x3,200x3,320x3 C / 150 ms each, 500 ms ODR sleep",
-    SCAN_SEQUENTIAL, 0, 0, 10,
-    {320, 100, 100, 100, 200, 200, 200, 320, 320, 320},
-    {150, 150, 150, 150, 150, 150, 150, 150, 150, 150}, BME68X_ODR_500_MS },
-  { "Seq_WideSweep", "[S] Wide sweep 100->450 C (10 steps, longer dwell at low temps, 500 ms ODR sleep)",
-    SCAN_SEQUENTIAL, 0, 0, 10,
-    {100, 150, 200, 250, 300, 325, 350, 380, 415, 450},
-    {200, 180, 160, 150, 150, 140, 140, 140, 140, 140}, BME68X_ODR_500_MS },
+  { "Seq_Std", "[S] 100,200,320 C / 150 ms each, 250 ms ODR sleep", SCAN_SEQUENTIAL, 0, 0, 3, { 100, 200, 320 }, { 150, 150, 150 }, BME68X_ODR_250_MS },
+  { "Seq_LinSweep", "[S] Linear sweep 200->400 C (10 steps / 150 ms each, 500 ms ODR sleep)", SCAN_SEQUENTIAL, 0, 0, 10, { 200, 222, 244, 267, 289, 311, 333, 356, 378, 400 }, { 150, 150, 150, 150, 150, 150, 150, 150, 150, 150 }, BME68X_ODR_500_MS },
+  { "Seq_Bosch", "[S] Bosch 10-step: 320,100x3,200x3,320x3 C / 150 ms each, 500 ms ODR sleep", SCAN_SEQUENTIAL, 0, 0, 10, { 320, 100, 100, 100, 200, 200, 200, 320, 320, 320 }, { 150, 150, 150, 150, 150, 150, 150, 150, 150, 150 }, BME68X_ODR_500_MS },
+  { "Seq_WideSweep", "[S] Wide sweep 100->450 C (10 steps, longer dwell at low temps, 500 ms ODR sleep)", SCAN_SEQUENTIAL, 0, 0, 10, { 100, 150, 200, 250, 300, 325, 350, 380, 415, 450 }, { 200, 180, 160, 150, 150, 140, 140, 140, 140, 140 }, BME68X_ODR_500_MS },
+  { "Seq_Uni", "[S] 100,100,100 C / 150 ms each, 250 ms ODR sleep", SCAN_SEQUENTIAL, 0, 0, 3, { 100, 100, 100 }, { 150, 150, 150 }, BME68X_ODR_250_MS },
 };
 
 const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
@@ -140,11 +116,12 @@ const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
 
 constexpr int kTensorArenaSize = 32 * 1024;
 
-constexpr int NUM_CLASSES  = 5;
-constexpr int NUM_FEATURES = 2;
+constexpr int NUM_CLASSES = 4;
+constexpr int NUM_FEATURES = 4;
 
-const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "basil", "cinnamon", "oregano", "rosemary" };
-const char* const MODEL_TYPE = "CNN";
+const char *const CLASS_LABELS[NUM_CLASSES] = { "air", "eucalyptus", "grapefruit", "lavender" };
+const char *const MODEL_TYPE = "CNN";
+const char *const PREPROCESSING_TYPE = "BASELINE_STD";
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Multi-sensor state
@@ -153,42 +130,42 @@ const char* const MODEL_TYPE = "CNN";
 const uint8_t MAX_ACTIVE = 8;
 
 /* User-configurable list of sensor indices (0-based, matching dev kit labels 1-8). */
-uint8_t activeSensors[MAX_ACTIVE] = { 0 };
+uint8_t activeSensors[MAX_ACTIVE] = { 2 };
 uint8_t numActiveSensors = 1;
 
 /* All per-sensor runtime state is held in this struct so the array of
  * active sensors can be managed without changing any other code paths. */
 struct SensorState {
-  Bme68x  bme;
-  commMux comm;
+  Bme68x bme;
+  commMux comm;  // for I2C communication
 
   /* Ongoing scan-cycle accumulation */
-  float   gasBuffer[10];
-  float   gasDiffBuffer[10];
-  bool    gasReceived[10];
-  float   lastTemp, lastHum, lastPres;
-  float   diffTemp, diffHum, diffPres;
-  int8_t  lastGasIdx;
-  bool    cycleHasData;
+  float gasBuffer[10];
+  float gasDiffBuffer[10];
+  bool gasReceived[10];
+  float lastTemp, lastHum, lastPres;
+  float diffTemp, diffHum, diffPres;
+  int8_t lastGasIdx;
+  bool cycleHasData;
 
   /* Frozen fingerprint from the most recently completed, validated cycle.
    * Written at wrap-around; read only after fingerprintReady == true. */
-  float   fpGas[10];
-  float   fpGasDiff[10];
-  float   fpTemp, fpHum, fpPres;
-  float   fpDiffTemp, fpDiffHum, fpDiffPres;
-  bool    fingerprintReady;
+  float fpGas[10];
+  float fpGasDiff[10];
+  float fpTemp, fpHum, fpPres;
+  float fpDiffTemp, fpDiffHum, fpDiffPres;
+  bool fingerprintReady;
 };
 
 SensorState sensorStates[MAX_ACTIVE];
 
-uint8_t  activeProfile  = 0;
+uint8_t activeProfile = 10;
 uint16_t sharedHeatrDur = 0;
-bool     running        = false;
-bool     cleaning       = false;
-uint32_t cleanStart     = 0;
-uint32_t cleanDuration  = CLEAN_DEF_SEC * 1000UL;
-uint32_t cleanLastPulse = 0;   /* millis() of the last heater pulse */
+bool running = false;
+bool cleaning = false;
+uint32_t cleanStart = 0;
+uint32_t cleanDuration = CLEAN_DEF_SEC * 1000UL;
+uint32_t cleanLastPulse = 0; /* millis() of the last heater pulse */
 
 /* Timestamp (millis) recorded at start of each collection window so we can
  * measure how long it takes all sensors to produce a complete fingerprint. */
@@ -198,36 +175,49 @@ uint32_t collectStart = 0;
  * currentLabel == -1  →  no label set (unlabelled run, no accuracy tracking).
  * currentLabel 0..NUM_CLASSES-1  →  true class for the current sample.
  * labelTotal / labelCorrect accumulate across the session. */
-int8_t   currentLabel = -1;
-uint16_t labelTotal[NUM_CLASSES]   = {0};
-uint16_t labelCorrect[NUM_CLASSES] = {0};
+int8_t currentLabel = -1;
+uint16_t labelTotal[NUM_CLASSES] = { 0 };
+uint16_t labelCorrect[NUM_CLASSES] = { 0 };
 
 /* ─── Timing statistics ────────────────────────────────────────────────
  * Running totals for computing averages; reset with 'timing reset'. */
-uint32_t timingCount      = 0;
+uint32_t timingCount = 0;
 uint64_t timingCollectSum = 0;  // ms
-uint64_t timingInferSum   = 0;  // us
+uint64_t timingInferSum = 0;    // us
 
 /* ─── SD inference log ─────────────────────────────────────────────────
  * Debugging feature: logs the exact averaged & standardised input tensor
  * that is fed to the model at each inference.  Entirely optional — set or
  * clear ilLogging with the 'logstart' / 'logstop' commands.  Inference
  * runs unchanged regardless of whether logging is active. */
-bool   ilLogging  = false;
+bool ilLogging = false;
 String ilFilename = "inference_log";
 
 /* ─── Imputation ───────────────────────────────────────────────────────
  * When true, missing gas steps at wrap-around are filled from peer sensors
  * (or from the historical training mean when no peer data exists) instead
  * of dropping the cycle.  Toggle with 'impute on' / 'impute off'. */
-bool imputationEnabled = true;
+bool imputationEnabled = false;
+
+/* ─── Baseline configuration ───────────────────────────────────────────
+ * 'config [<N>]' collects N complete measurements, averages the raw
+ * sensor readings per heater-step, and stores the result in baselineFp[].
+ * A new 'config' call overwrites the stored baseline. */
+bool configuring = false;
+uint8_t configTarget = 10;
+uint8_t configCount = 0;
+bool baselineReady = false;
+float baselineFp[10 * NUM_FEATURES] = { 0 };
+float configAccum[10 * NUM_FEATURES] = { 0 };
+uint8_t baselineSeqLen = 0;
 
 String cmdBuffer = "";
+
 
 /* TFLite Micro */
 alignas(16) static uint8_t tensor_arena[kTensorArenaSize];
 static tflite::MicroMutableOpResolver<5> resolver;
-static tflite::MicroInterpreter* interpreter = nullptr;
+static tflite::MicroInterpreter *interpreter = nullptr;
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Preprocessing
@@ -237,6 +227,13 @@ inline float standardise(float value, int step, int feat) {
   return (value - FEATURE_MEAN[step][feat]) / FEATURE_STD[step][feat];
 }
 
+inline float fractional_baseline_correction(float value, int step, int feat) {
+  int base = step * NUM_FEATURES;
+  return (value - baselineFp[base + feat]) / (baselineFp[base + feat] + 1e-6f);
+}
+
+
+
 /* ═══════════════════════════════════════════════════════════════════════
  * Helpers
  * ═══════════════════════════════════════════════════════════════════════ */
@@ -244,7 +241,7 @@ inline float standardise(float value, int step, int feat) {
 void resetSensorGasBuffer(uint8_t s, uint8_t len) {
   SensorState &ss = sensorStates[s];
   for (uint8_t i = 0; i < len; i++) {
-    ss.gasBuffer[i]   = 0.0f;
+    ss.gasBuffer[i] = 0.0f;
     ss.gasReceived[i] = false;
   }
   ss.lastGasIdx = -1;
@@ -293,17 +290,17 @@ void imputeMissingSensorSteps(uint8_t s, uint8_t profileLen) {
     for (uint8_t o = 0; o < numActiveSensors; o++) {
       if (o == s) continue;
       if (sensorStates[o].gasReceived[t]) {
-        gasSum  += sensorStates[o].gasBuffer[t];
+        gasSum += sensorStates[o].gasBuffer[t];
         diffSum += sensorStates[o].gasDiffBuffer[t];
         validPeers++;
       }
     }
 
     if (validPeers > 0) {
-      ss.gasBuffer[t]     = gasSum  / validPeers;
+      ss.gasBuffer[t] = gasSum / validPeers;
       ss.gasDiffBuffer[t] = diffSum / validPeers;
     } else {
-      ss.gasBuffer[t]     = FEATURE_MEAN[t][0];  // gas_resistance mean
+      ss.gasBuffer[t] = FEATURE_MEAN[t][0];      // gas_resistance mean
       ss.gasDiffBuffer[t] = FEATURE_MEAN[t][1];  // gas_resistance_diff mean
     }
     ss.gasReceived[t] = true;
@@ -344,12 +341,12 @@ void recordResult(int predicted) {
  * ═══════════════════════════════════════════════════════════════════════ */
 
 /* For each heater step t and feature i:
- *   1. Standardise the frozen fingerprint value for every active sensor.
+ *   1. Standardise / baseline-correct the frozen fingerprint value for every active sensor.
  *   2. Average the standardised values across sensors.
  *   3. Run inference on the averaged input tensor. */
 void runAveragedInference() {
   const HeatingProfile &prof = PROFILES[activeProfile];
-  TfLiteTensor* inp = interpreter->input(0);
+  TfLiteTensor *inp = interpreter->input(0);
 
   if (inp->dims->size != 3) {
     Serial.println("[WARN] runAveragedInference: model is not a sequence model "
@@ -369,27 +366,37 @@ void runAveragedInference() {
   /* Zero the input tensor and the sum-of-squares scratch buffer. */
   const int totalElems = prof.profileLen * NUM_FEATURES;
   for (int i = 0; i < totalElems; i++) inp->data.f[i] = 0.0f;
-  float sumSq[10 * NUM_FEATURES] = {0};
+  float sumSq[10 * NUM_FEATURES] = { 0 };
 
   /* Accumulate standardised values (and their squares) from each sensor. */
   for (uint8_t s = 0; s < numActiveSensors; s++) {
     SensorState &ss = sensorStates[s];
     for (uint8_t t = 0; t < prof.profileLen; t++) {
       const float raw[NUM_FEATURES] = {
-        //ss.fpTemp,
-        //ss.fpPres,
-        //ss.fpHum,
+        // ss.fpTemp,
+        // ss.fpPres,
+        ss.fpHum,
         ss.fpGas[t],
-        //ss.fpDiffTemp,
-        //ss.fpDiffPres,
-        //ss.fpDiffHum,
+        // ss.fpDiffTemp,
+        // ss.fpDiffPres,
+        ss.fpDiffHum,
         ss.fpGasDiff[t],
       };
       int base = t * NUM_FEATURES;
       for (int i = 0; i < NUM_FEATURES; i++) {
-        float v = (FEATURE_STD[t][i] != 0.0f) ? standardise(raw[i], t, i) : raw[i];
+        float v;
+        if (PREPROCESSING_TYPE == "STANDARD") {
+          v = (FEATURE_STD[t][i] != 0.0f) ? standardise(raw[i], t, i) : raw[i];
+        } else if (PREPROCESSING_TYPE == "BASELINE") {
+          v = fractional_baseline_correction(raw[i], t, i);
+        } else if (PREPROCESSING_TYPE == "BASELINE_STD") {
+          v = fractional_baseline_correction(raw[i], t, i);
+          v = (FEATURE_STD[t][i] != 0.0f) ? standardise(v, t, i) : v;
+        } else {
+          v = raw[i];
+        }
         inp->data.f[base + i] += v;
-        sumSq[base + i]       += v * v;
+        sumSq[base + i] += v * v;
       }
     }
   }
@@ -418,7 +425,7 @@ void runAveragedInference() {
     Serial.print("  Var:");
     for (int i = 0; i < NUM_FEATURES; i++) {
       float mean = inp->data.f[base + i];
-      float var  = sumSq[base + i] / (float)numActiveSensors - mean * mean;
+      float var = sumSq[base + i] / (float)numActiveSensors - mean * mean;
       Serial.print(" ");
       // Serial.print(max(0.0f, var), 4);
       Serial.print(var, 4);
@@ -434,11 +441,14 @@ void runAveragedInference() {
   }
   uint32_t t_inf1 = micros();
 
-  TfLiteTensor* out = interpreter->output(0);
-  int   predicted = 0;
-  float best      = out->data.f[0];
+  TfLiteTensor *out = interpreter->output(0);
+  int predicted = 0;
+  float best = out->data.f[0];
   for (int i = 1; i < NUM_CLASSES; i++) {
-    if (out->data.f[i] > best) { best = out->data.f[i]; predicted = i; }
+    if (out->data.f[i] > best) {
+      best = out->data.f[i];
+      predicted = i;
+    }
   }
 
   Serial.print("Prediction: ");
@@ -456,15 +466,77 @@ void runAveragedInference() {
   Serial.println("]");
   recordResult(predicted);
   uint32_t collectMs = millis() - collectStart;
-  uint32_t inferUs   = t_inf1 - t_inf0;
+  uint32_t inferUs = t_inf1 - t_inf0;
   timingCollectSum += collectMs;
-  timingInferSum   += inferUs;
+  timingInferSum += inferUs;
   timingCount++;
   Serial.print("Timing — collect: ");
   Serial.print(collectMs);
   Serial.print(" ms  |  inference: ");
   Serial.print(inferUs);
   Serial.println(" us");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Baseline capture  (sequential / parallel mode)
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Accumulates one sensor-averaged measurement into configAccum[].
+ * When configTarget measurements have been collected, finalises baselineFp[]
+ * and exits config mode. */
+void captureBaselineSample() {
+  const HeatingProfile &prof = PROFILES[activeProfile];
+
+  for (uint8_t t = 0; t < prof.profileLen; t++) {
+    float stepSum[NUM_FEATURES] = { 0 };
+    for (uint8_t s = 0; s < numActiveSensors; s++) {
+      SensorState &ss = sensorStates[s];
+      const float raw[NUM_FEATURES] = {
+        // ss.fpTemp,
+        // ss.fpPres,
+        ss.fpHum,
+        ss.fpGas[t],
+        // ss.fpDiffTemp,
+        // ss.fpDiffPres,
+        ss.fpDiffHum,
+        ss.fpGasDiff[t],
+      };
+      for (int i = 0; i < NUM_FEATURES; i++) stepSum[i] += raw[i];
+    }
+    int base = t * NUM_FEATURES;
+    for (int i = 0; i < NUM_FEATURES; i++)
+      configAccum[base + i] += stepSum[i] / (float)numActiveSensors;
+  }
+
+  configCount++;
+  Serial.println("[CONFIG] " + String(configCount) + "/" + String(configTarget) + " measurement(s) collected.");
+
+  if (configCount < configTarget) return;
+
+  /* Finalise: divide sums by number of measurements. */
+  const int totalElems = prof.profileLen * NUM_FEATURES;
+  for (int i = 0; i < totalElems; i++)
+    baselineFp[i] = configAccum[i] / (float)configTarget;
+  baselineSeqLen = prof.profileLen;
+  baselineReady = true;
+  configuring = false;
+
+  for (uint8_t s = 0; s < numActiveSensors; s++)
+    sensorStates[s].bme.setOpMode(BME68X_SLEEP_MODE);
+
+  Serial.println("[CONFIG] Baseline saved (" + String(configTarget) + " measurements, " + String(prof.profileLen) + " steps):");
+  for (uint8_t t = 0; t < prof.profileLen; t++) {
+    Serial.print("  Step[");
+    Serial.print(t);
+    Serial.print("]:");
+    int base = t * NUM_FEATURES;
+    for (int i = 0; i < NUM_FEATURES; i++) {
+      Serial.print(" ");
+      Serial.print(baselineFp[base + i]);
+    }
+    Serial.println();
+  }
+  Serial.println(">> Baseline ready. Send 'run' to start inference.");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -505,13 +577,13 @@ void pollSensor(uint8_t s) {
           ok = validateSensorScan(s, prof.profileLen);
         }
         if (ok) {
-          memcpy(ss.fpGas,    ss.gasBuffer,    prof.profileLen * sizeof(float));
+          memcpy(ss.fpGas, ss.gasBuffer, prof.profileLen * sizeof(float));
           memcpy(ss.fpGasDiff, ss.gasDiffBuffer, prof.profileLen * sizeof(float));
-          ss.fpTemp     = ss.lastTemp;
-          ss.fpHum      = ss.lastHum;
-          ss.fpPres     = ss.lastPres;
+          ss.fpTemp = ss.lastTemp;
+          ss.fpHum = ss.lastHum;
+          ss.fpPres = ss.lastPres;
           ss.fpDiffTemp = ss.diffTemp;
-          ss.fpDiffHum  = ss.diffHum;
+          ss.fpDiffHum = ss.diffHum;
           ss.fpDiffPres = ss.diffPres;
           ss.fingerprintReady = true;
         }
@@ -520,22 +592,22 @@ void pollSensor(uint8_t s) {
       resetSensorGasBuffer(s, prof.profileLen);
     }
 
-    ss.diffTemp = (ss.lastTemp == 0.0f) ? 0.0f : (data.temperature       - ss.lastTemp);
-    ss.diffHum  = (ss.lastHum  == 0.0f) ? 0.0f : (data.humidity          - ss.lastHum);
+    ss.diffTemp = (ss.lastTemp == 0.0f) ? 0.0f : (data.temperature - ss.lastTemp);
+    ss.diffHum = (ss.lastHum == 0.0f) ? 0.0f : (data.humidity - ss.lastHum);
     ss.diffPres = (ss.lastPres == 0.0f) ? 0.0f : (data.pressure / 100.0f - ss.lastPres);
 
     ss.lastTemp = data.temperature;
-    ss.lastHum  = data.humidity;
+    ss.lastHum = data.humidity;
     ss.lastPres = data.pressure / 100.0f;
 
     if ((data.status & GAS_VALID_MSK) == GAS_VALID_MSK) {
       ss.gasDiffBuffer[gi] = (gi == 0) ? 0.0f
-                             : (ss.gasReceived[gi - 1]
-                                ? (data.gas_resistance - ss.gasBuffer[gi - 1])
-                                : 0.0f);
-      ss.gasBuffer[gi]   = data.gas_resistance;
+                                       : (ss.gasReceived[gi - 1]
+                                            ? (data.gas_resistance - ss.gasBuffer[gi - 1])
+                                            : 0.0f);
+      ss.gasBuffer[gi] = data.gas_resistance;
       ss.gasReceived[gi] = true;
-      ss.cycleHasData    = true;
+      ss.cycleHasData = true;
     }
 
     ss.lastGasIdx = (int8_t)gi;
@@ -553,17 +625,24 @@ void pollAllSensors() {
 
   bool allReady = true;
   for (uint8_t s = 0; s < numActiveSensors; s++) {
-    if (!sensorStates[s].fingerprintReady) { allReady = false; break; }
+    if (!sensorStates[s].fingerprintReady) {
+      allReady = false;
+      break;
+    }
   }
 
   if (!allReady) return;
 
-  Serial.print("[");
-  Serial.print(prof.name);
-  Serial.print("] ");
-  Serial.print(numActiveSensors);
-  Serial.print(" sensor(s) complete — ");
-  runAveragedInference();
+  if (configuring) {
+    captureBaselineSample();
+  } else {
+    Serial.print("[");
+    Serial.print(prof.name);
+    Serial.print("] ");
+    Serial.print(numActiveSensors);
+    Serial.print(" sensor(s) complete — ");
+    runAveragedInference();
+  }
 
   /* Reset all fingerprint flags; sensors continue accumulating their next cycles. */
   for (uint8_t s = 0; s < numActiveSensors; s++) {
@@ -579,9 +658,9 @@ void pollAllSensors() {
 /* Triggers one forced measurement on every active sensor, z-scores and
  * averages the features, then runs inference. */
 void takeForcedMeasurements() {
-  TfLiteTensor* inp = interpreter->input(0);
+  TfLiteTensor *inp = interpreter->input(0);
   for (int i = 0; i < NUM_FEATURES; i++) inp->data.f[i] = 0.0f;
-  float sumSq[NUM_FEATURES] = {0};
+  float sumSq[NUM_FEATURES] = { 0 };
 
   uint8_t validCount = 0;
 
@@ -594,9 +673,9 @@ void takeForcedMeasurements() {
     if (!ss.bme.fetchData()) continue;
     ss.bme.getData(data);
 
-    if (!(data.status & BME68X_NEW_DATA_MSK))   continue;
+    if (!(data.status & BME68X_NEW_DATA_MSK)) continue;
     if (!(data.status & BME68X_GASM_VALID_MSK)) continue;
-    if (!(data.status & BME68X_HEAT_STAB_MSK))  continue;
+    if (!(data.status & BME68X_HEAT_STAB_MSK)) continue;
 
     Serial.print("[S");
     Serial.print(activeSensors[s] + 1);
@@ -611,18 +690,29 @@ void takeForcedMeasurements() {
 
     /* Diff features are 0 for forced mode (single-step, no sequence). */
     const float raw[NUM_FEATURES] = {
-      //data.temperature,
-      //data.pressure / 100.0f,
-      //data.humidity,
+      // data.temperature,
+      // data.pressure / 100.0f,
+      data.humidity,
       data.gas_resistance,
-      //0.0f, 0.0f, 0.0f,
+      // 0.0f, 0.0f,
+      0.0f,
       0.0f,
     };
 
     for (int i = 0; i < NUM_FEATURES; i++) {
-      float v = (FEATURE_STD[0][i] != 0.0f) ? standardise(raw[i], 0, i) : raw[i];
+      float v;
+      if (PREPROCESSING_TYPE == "STANDARD") {
+        v = (FEATURE_STD[0][i] != 0.0f) ? standardise(raw[i], 0, i) : raw[i];
+      } else if (PREPROCESSING_TYPE == "BASELINE") {
+        v = fractional_baseline_correction(raw[i], 0, i);
+      } else if (PREPROCESSING_TYPE == "BASELINE_STD") {
+        v = fractional_baseline_correction(raw[i], 0, i);
+        v = (FEATURE_STD[0][i] != 0.0f) ? standardise(v, 0, i) : v;
+      } else {
+        v = raw[i];
+      }
       inp->data.f[i] += v;
-      sumSq[i]       += v * v;
+      sumSq[i] += v * v;
     }
     validCount++;
   }
@@ -644,11 +734,10 @@ void takeForcedMeasurements() {
   Serial.print("Var:");
   for (int i = 0; i < NUM_FEATURES; i++) {
     float mean = inp->data.f[i];
-    float var  = sumSq[i] / (float)validCount - mean * mean;
+    float var = sumSq[i] / (float)validCount - mean * mean;
     Serial.print(" ");
     // Serial.print(max(0.0f, var), 4);
     Serial.print(var, 4);
-
   }
   Serial.println();
 
@@ -659,11 +748,14 @@ void takeForcedMeasurements() {
   }
   uint32_t t_inf1 = micros();
 
-  TfLiteTensor* out = interpreter->output(0);
-  int   predicted = 0;
-  float best      = out->data.f[0];
+  TfLiteTensor *out = interpreter->output(0);
+  int predicted = 0;
+  float best = out->data.f[0];
   for (int i = 1; i < NUM_CLASSES; i++) {
-    if (out->data.f[i] > best) { best = out->data.f[i]; predicted = i; }
+    if (out->data.f[i] > best) {
+      best = out->data.f[i];
+      predicted = i;
+    }
   }
 
   Serial.print("Prediction: ");
@@ -681,9 +773,9 @@ void takeForcedMeasurements() {
   Serial.println("]");
   recordResult(predicted);
   uint32_t collectMs = millis() - collectStart;
-  uint32_t inferUs   = t_inf1 - t_inf0;
+  uint32_t inferUs = t_inf1 - t_inf0;
   timingCollectSum += collectMs;
-  timingInferSum   += inferUs;
+  timingInferSum += inferUs;
   timingCount++;
   Serial.print("Timing — collect: ");
   Serial.print(collectMs);
@@ -691,6 +783,60 @@ void takeForcedMeasurements() {
   Serial.print(inferUs);
   Serial.println(" us");
   collectStart = millis();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Baseline capture  (forced mode)
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+void captureBaselineForcedSample() {
+  float sensorSum[NUM_FEATURES] = { 0 };
+  uint8_t validCount = 0;
+
+  for (uint8_t s = 0; s < numActiveSensors; s++) {
+    SensorState &ss = sensorStates[s];
+    ss.bme.setOpMode(BME68X_FORCED_MODE);
+    delayMicroseconds(ss.bme.getMeasDur(BME68X_FORCED_MODE));
+
+    bme68xData data;
+    if (!ss.bme.fetchData()) continue;
+    ss.bme.getData(data);
+
+    if (!(data.status & BME68X_NEW_DATA_MSK)) continue;
+    if (!(data.status & BME68X_GASM_VALID_MSK)) continue;
+    if (!(data.status & BME68X_HEAT_STAB_MSK)) continue;
+
+    sensorSum[0] += data.temperature;
+    sensorSum[1] += data.pressure / 100.0f;
+    sensorSum[2] += data.humidity;
+    sensorSum[3] += data.gas_resistance;
+    sensorSum[4] += 0.0f;
+    validCount++;
+  }
+
+  if (validCount == 0) return;
+
+  for (int i = 0; i < NUM_FEATURES; i++)
+    configAccum[i] += sensorSum[i] / (float)validCount;
+
+  configCount++;
+  Serial.println("[CONFIG] " + String(configCount) + "/" + String(configTarget) + " measurement(s) collected.");
+
+  if (configCount < configTarget) return;
+
+  for (int i = 0; i < NUM_FEATURES; i++)
+    baselineFp[i] = configAccum[i] / (float)configTarget;
+  baselineSeqLen = 1;
+  baselineReady = true;
+  configuring = false;
+
+  Serial.print("[CONFIG] Baseline saved:");
+  for (int i = 0; i < NUM_FEATURES; i++) {
+    Serial.print(" ");
+    Serial.print(baselineFp[i]);
+  }
+  Serial.println();
+  Serial.println(">> Baseline ready. Send 'run' to start inference.");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -712,8 +858,7 @@ bool initSensors() {
     ss.bme.begin(BME68X_SPI_INTF, commMuxRead, commMuxWrite, commMuxDelay, &ss.comm);
 
     if (ss.bme.checkStatus()) {
-      Serial.println("ERR: Sensor " + String(idx + 1) +
-                     " init failed — " + ss.bme.statusString());
+      Serial.println("ERR: Sensor " + String(idx + 1) + " init failed — " + ss.bme.statusString());
       return false;
     }
 
@@ -723,7 +868,7 @@ bool initSensors() {
     if (prof.scanMode == SCAN_PARALLEL) {
       uint16_t tArr[10], mArr[10];
       memcpy(tArr, prof.tempProf, prof.profileLen * sizeof(uint16_t));
-      memcpy(mArr, prof.mulProf,  prof.profileLen * sizeof(uint16_t));
+      memcpy(mArr, prof.mulProf, prof.profileLen * sizeof(uint16_t));
       if (s == 0) {
         sharedHeatrDur = 140 - (ss.bme.getMeasDur(BME68X_PARALLEL_MODE) / 1000);
       }
@@ -731,7 +876,7 @@ bool initSensors() {
     } else if (prof.scanMode == SCAN_SEQUENTIAL) {
       uint16_t tArr[10], dArr[10];
       memcpy(tArr, prof.tempProf, prof.profileLen * sizeof(uint16_t));
-      memcpy(dArr, prof.mulProf,  prof.profileLen * sizeof(uint16_t));
+      memcpy(dArr, prof.mulProf, prof.profileLen * sizeof(uint16_t));
       ss.bme.setSeqSleep(prof.seqSleep);
       ss.bme.setHeaterProf(tArr, dArr, prof.profileLen);
     } else {
@@ -739,10 +884,14 @@ bool initSensors() {
     }
 
     /* Reset per-sensor state. */
-    ss.lastTemp = 0; ss.lastHum = 0; ss.lastPres = 0;
-    ss.diffTemp = 0; ss.diffHum = 0; ss.diffPres = 0;
-    ss.lastGasIdx       = -1;
-    ss.cycleHasData     = false;
+    ss.lastTemp = 0;
+    ss.lastHum = 0;
+    ss.lastPres = 0;
+    ss.diffTemp = 0;
+    ss.diffHum = 0;
+    ss.diffPres = 0;
+    ss.lastGasIdx = -1;
+    ss.cycleHasData = false;
     ss.fingerprintReady = false;
     resetSensorGasBuffer(s, prof.profileLen > 0 ? prof.profileLen : 1);
   }
@@ -757,7 +906,7 @@ bool initSensors() {
  * Fires one 200 ms forced-mode pulse at CLEAN_TEMP_C every 4 s (5% duty cycle),
  * printing progress every pulse. Stops sensors and resets the flag when done. */
 void runCleanCycle() {
-  uint32_t now     = millis();
+  uint32_t now = millis();
   uint32_t elapsed = now - cleanStart;
 
   if (elapsed >= cleanDuration) {
@@ -772,8 +921,7 @@ void runCleanCycle() {
   if (now - cleanLastPulse >= CLEAN_GAP_MS) {
     cleanLastPulse = now;
     uint32_t remaining = (cleanDuration - elapsed + 999) / 1000;
-    Serial.println(">> Clean pulse — " + String(elapsed / 1000) + "/" +
-                   String(cleanDuration / 1000) + " s  (" + String(remaining) + " s left)");
+    Serial.println(">> Clean pulse — " + String(elapsed / 1000) + "/" + String(cleanDuration / 1000) + " s  (" + String(remaining) + " s left)");
 
     for (uint8_t s = 0; s < numActiveSensors; s++) {
       sensorStates[s].bme.setOpMode(BME68X_FORCED_MODE);
@@ -783,7 +931,7 @@ void runCleanCycle() {
     for (uint8_t s = 0; s < numActiveSensors; s++) {
       bme68xData data;
       sensorStates[s].bme.fetchData();
-      sensorStates[s].bme.getData(data);  /* discard — we only care about heat */
+      sensorStates[s].bme.getData(data); /* discard — we only care about heat */
     }
   }
 }
@@ -847,28 +995,28 @@ void handleCommand(const String &cmd) {
     running = true;
     collectStart = millis();
 
-    Serial.print(">> Running  profile " + String(activeProfile + 1) +
-                 " [" + String(prof.name) + "]  sensors: ");
+    Serial.print(">> Running  profile " + String(activeProfile + 1) + " [" + String(prof.name) + "]  sensors: ");
     for (uint8_t s = 0; s < numActiveSensors; s++) {
       if (s > 0) Serial.print(",");
       Serial.print(activeSensors[s] + 1);
     }
     Serial.println();
 
-  /* ── stop ──────────────────────────────────────────────────────────── */
+    /* ── stop ──────────────────────────────────────────────────────────── */
   } else if (cmd == "stop") {
-    if (!running && !cleaning) {
+    if (!running && !cleaning && !configuring) {
       Serial.println(">> Not running.");
       return;
     }
     for (uint8_t s = 0; s < numActiveSensors; s++) {
       sensorStates[s].bme.setOpMode(BME68X_SLEEP_MODE);
     }
-    running  = false;
+    running = false;
     cleaning = false;
+    configuring = false;
     Serial.println(">> Stopped.");
 
-  /* ── clean [<seconds>] ─────────────────────────────────────────────── */
+    /* ── clean [<seconds>] ─────────────────────────────────────────────── */
   } else if (cmd == "clean" || cmd.startsWith("clean ")) {
     if (running) {
       Serial.println(">> Stop inference before cleaning.");
@@ -892,22 +1040,20 @@ void handleCommand(const String &cmd) {
       ss.comm = commMuxSetConfig(Wire, SPI, idx, ss.comm);
       ss.bme.begin(BME68X_SPI_INTF, commMuxRead, commMuxWrite, commMuxDelay, &ss.comm);
       if (ss.bme.checkStatus()) {
-        Serial.println("ERR: Sensor " + String(idx + 1) +
-                       " init failed — " + ss.bme.statusString());
+        Serial.println("ERR: Sensor " + String(idx + 1) + " init failed — " + ss.bme.statusString());
         return;
       }
       ss.bme.setTPH(BME68X_OS_8X, BME68X_OS_4X, BME68X_OS_2X);
       ss.bme.setHeaterProf(CLEAN_TEMP_C, CLEAN_DUR_MS);
     }
 
-    cleaning       = true;
-    cleanStart     = millis();
-    cleanLastPulse = cleanStart - CLEAN_GAP_MS;  /* fire first pulse immediately */
-    Serial.println(">> Cleaning cycle started — " + String(sec) + " s at " +
-                   String(CLEAN_TEMP_C) + " C  (5% duty cycle, one pulse every 4 s).");
+    cleaning = true;
+    cleanStart = millis();
+    cleanLastPulse = cleanStart - CLEAN_GAP_MS; /* fire first pulse immediately */
+    Serial.println(">> Cleaning cycle started — " + String(sec) + " s at " + String(CLEAN_TEMP_C) + " C  (5% duty cycle, one pulse every 4 s).");
     Serial.println("   Send 'stop' to abort.");
 
-  /* ── profile <N> ───────────────────────────────────────────────────── */
+    /* ── profile <N> ───────────────────────────────────────────────────── */
   } else if (cmd.startsWith("profile ")) {
     if (running) {
       Serial.println(">> Stop before changing profile.");
@@ -915,25 +1061,21 @@ void handleCommand(const String &cmd) {
     }
     int n = cmd.substring(8).toInt();
     if (n < 1 || n > (int)NUM_PROFILES) {
-      Serial.println(">> Profile must be 1–" + String(NUM_PROFILES) +
-                     ". Send 'profiles' to list.");
+      Serial.println(">> Profile must be 1–" + String(NUM_PROFILES) + ". Send 'profiles' to list.");
     } else {
       activeProfile = (uint8_t)(n - 1);
-      Serial.println(">> Profile set to " + String(n) +
-                     " [" + String(PROFILES[activeProfile].name) + "]");
+      Serial.println(">> Profile set to " + String(n) + " [" + String(PROFILES[activeProfile].name) + "]");
     }
 
-  /* ── profiles ──────────────────────────────────────────────────────── */
+    /* ── profiles ──────────────────────────────────────────────────────── */
   } else if (cmd == "profiles") {
     Serial.println("--- Available heating profiles ---");
     for (uint8_t i = 0; i < NUM_PROFILES; i++) {
-      Serial.println("  " + String(i + 1) + ": " +
-                     String(PROFILES[i].name) + "  " +
-                     String(PROFILES[i].description));
+      Serial.println("  " + String(i + 1) + ": " + String(PROFILES[i].name) + "  " + String(PROFILES[i].description));
     }
     Serial.println("----------------------------------");
 
-  /* ── sensors [list] ────────────────────────────────────────────────── */
+    /* ── sensors [list] ────────────────────────────────────────────────── */
   } else if (cmd == "sensors") {
     Serial.print("Active sensors: ");
     for (uint8_t s = 0; s < numActiveSensors; s++) {
@@ -956,13 +1098,12 @@ void handleCommand(const String &cmd) {
     }
     Serial.println();
 
-  /* ── label [N] ─────────────────────────────────────────────────────── */
+    /* ── label [N] ─────────────────────────────────────────────────────── */
   } else if (cmd == "label") {
     if (currentLabel < 0) {
       Serial.println(">> No label set. Use 'label <N>' to set one.");
     } else {
-      Serial.println(">> Current label: " + String(currentLabel + 1) +
-                     " [" + CLASS_LABELS[currentLabel] + "]");
+      Serial.println(">> Current label: " + String(currentLabel + 1) + " [" + CLASS_LABELS[currentLabel] + "]");
     }
     Serial.println("   Classes:");
     for (int i = 0; i < NUM_CLASSES; i++) {
@@ -979,8 +1120,7 @@ void handleCommand(const String &cmd) {
       int n = arg.toInt();
       if (n >= 1 && n <= NUM_CLASSES) {
         currentLabel = (int8_t)(n - 1);
-        Serial.println(">> Label set to " + String(n) +
-                       " [" + CLASS_LABELS[currentLabel] + "]");
+        Serial.println(">> Label set to " + String(n) + " [" + CLASS_LABELS[currentLabel] + "]");
       } else {
         Serial.println(">> Label must be 1–" + String(NUM_CLASSES) + " or 'off'. Classes:");
         for (int i = 0; i < NUM_CLASSES; i++) {
@@ -989,7 +1129,7 @@ void handleCommand(const String &cmd) {
       }
     }
 
-  /* ── accuracy ──────────────────────────────────────────────────────── */
+    /* ── accuracy ──────────────────────────────────────────────────────── */
   } else if (cmd == "accuracy") {
     Serial.println("--- Per-class accuracy ---");
     uint32_t totalInf = 0, totalCorrect = 0;
@@ -998,22 +1138,19 @@ void handleCommand(const String &cmd) {
         Serial.println("  " + String(CLASS_LABELS[i]) + ": no data");
       } else {
         float acc = 100.0f * (float)labelCorrect[i] / (float)labelTotal[i];
-        Serial.println("  " + String(CLASS_LABELS[i]) + ": " +
-                       String(labelCorrect[i]) + "/" + String(labelTotal[i]) +
-                       "  (" + String(acc, 1) + "%)");
-        totalInf     += labelTotal[i];
+        Serial.println("  " + String(CLASS_LABELS[i]) + ": " + String(labelCorrect[i]) + "/" + String(labelTotal[i]) + "  (" + String(acc, 1) + "%)");
+        totalInf += labelTotal[i];
         totalCorrect += labelCorrect[i];
       }
     }
     if (totalInf > 0) {
-      Serial.println("  Overall: " + String(totalCorrect) + "/" + String(totalInf) +
-                     "  (" + String(100.0f * (float)totalCorrect / (float)totalInf, 1) + "%)");
+      Serial.println("  Overall: " + String(totalCorrect) + "/" + String(totalInf) + "  (" + String(100.0f * (float)totalCorrect / (float)totalInf, 1) + "%)");
     } else {
       Serial.println("  No labelled inferences yet.");
     }
     Serial.println("--------------------------");
 
-  /* ── timing [reset] ────────────────────────────────────────────────── */
+    /* ── timing [reset] ────────────────────────────────────────────────── */
   } else if (cmd == "timing") {
     if (timingCount == 0) {
       Serial.println("No timing data yet.");
@@ -1032,13 +1169,14 @@ void handleCommand(const String &cmd) {
     timingCount = timingCollectSum = timingInferSum = 0;
     Serial.println(">> Timing stats reset.");
 
-  /* ── status ────────────────────────────────────────────────────────── */
+    /* ── status ────────────────────────────────────────────────────────── */
   } else if (cmd == "status") {
     const HeatingProfile &prof = PROFILES[activeProfile];
     if (cleaning) {
       uint32_t elapsed = (millis() - cleanStart) / 1000;
-      Serial.println("Running : cleaning  (" + String(elapsed) + "/" +
-                     String(cleanDuration / 1000) + " s)");
+      Serial.println("Running : cleaning  (" + String(elapsed) + "/" + String(cleanDuration / 1000) + " s)");
+    } else if (configuring) {
+      Serial.println("Running : config  (" + String(configCount) + "/" + String(configTarget) + " measurements)");
     } else {
       Serial.println("Running : " + String(running ? "yes" : "no"));
     }
@@ -1048,18 +1186,16 @@ void handleCommand(const String &cmd) {
       Serial.print(activeSensors[s] + 1);
     }
     Serial.println();
-    Serial.println("Profile : " + String(activeProfile + 1) +
-                   " [" + String(prof.name) + "] — " +
-                   String(prof.description));
+    Serial.println("Profile : " + String(activeProfile + 1) + " [" + String(prof.name) + "] — " + String(prof.description));
     if (currentLabel >= 0) {
-      Serial.println("Label   : " + String(currentLabel + 1) +
-                     " [" + CLASS_LABELS[currentLabel] + "]");
+      Serial.println("Label   : " + String(currentLabel + 1) + " [" + CLASS_LABELS[currentLabel] + "]");
     } else {
       Serial.println("Label   : (none)");
     }
     Serial.println("Impute  : " + String(imputationEnabled ? "ON" : "OFF"));
+    Serial.println("Baseline: " + String(baselineReady ? "ready (" + String(baselineSeqLen) + " step(s))" : "not set"));
 
-  /* ── logfile [<name>] ──────────────────────────────────────────────── */
+    /* ── logfile [<name>] ──────────────────────────────────────────────── */
   } else if (cmd == "logfile") {
     Serial.println(">> Log file : " + ilFilename + ".csv");
     Serial.println("   Logging  : " + String(ilLogging ? "active" : "stopped"));
@@ -1074,7 +1210,7 @@ void handleCommand(const String &cmd) {
     ilFilename.trim();
     Serial.println(">> Log filename set to: " + ilFilename + ".csv");
 
-  /* ── logstart ───────────────────────────────────────────────────────
+    /* ── logstart ───────────────────────────────────────────────────────
    * Opens the CSV file and enables per-inference logging.
    * The number of input columns is derived from the current profile so
    * the header matches the data.  Change the profile before 'logstart',
@@ -1086,15 +1222,14 @@ void handleCommand(const String &cmd) {
     }
     const HeatingProfile &prof = PROFILES[activeProfile];
     int numInputs = (prof.scanMode == SCAN_FORCED)
-                    ? NUM_FEATURES
-                    : (int)prof.profileLen * NUM_FEATURES;
+                      ? NUM_FEATURES
+                      : (int)prof.profileLen * NUM_FEATURES;
     if (ilOpen(ilFilename, numInputs)) {
       ilLogging = true;
-      Serial.println(">> SD logging started — " + ilFilename + ".csv" +
-                     "  (" + String(numInputs) + " inputs/row).");
+      Serial.println(">> SD logging started — " + ilFilename + ".csv" + "  (" + String(numInputs) + " inputs/row).");
     }
 
-  /* ── logstop ────────────────────────────────────────────────────────── */
+    /* ── logstop ────────────────────────────────────────────────────────── */
   } else if (cmd == "logstop") {
     if (!ilLogging) {
       Serial.println(">> Not logging.");
@@ -1103,7 +1238,41 @@ void handleCommand(const String &cmd) {
     ilClose();
     ilLogging = false;
 
-  /* ── impute [on|off] ────────────────────────────────────────────────── */
+    /* ── config [<N>] ──────────────────────────────────────────────────── */
+  } else if (cmd == "config" || cmd.startsWith("config ")) {
+    if (running || cleaning) {
+      Serial.println(">> Stop inference/cleaning before configuring.");
+      return;
+    }
+    uint8_t n = 5;
+    if (cmd.startsWith("config ")) {
+      int parsed = cmd.substring(7).toInt();
+      if (parsed > 0 && parsed <= 255) n = (uint8_t)parsed;
+    }
+    configTarget = n;
+    configCount = 0;
+    memset(configAccum, 0, sizeof(configAccum));
+
+    if (!initSensors()) {
+      Serial.println(">> Sensor init failed — cannot start config.");
+      return;
+    }
+    const HeatingProfile &prof = PROFILES[activeProfile];
+    if (prof.scanMode == SCAN_PARALLEL) {
+      for (uint8_t s = 0; s < numActiveSensors; s++)
+        sensorStates[s].bme.setOpMode(BME68X_PARALLEL_MODE);
+    } else if (prof.scanMode == SCAN_SEQUENTIAL) {
+      for (uint8_t s = 0; s < numActiveSensors; s++)
+        sensorStates[s].bme.setOpMode(BME68X_SEQUENTIAL_MODE);
+    }
+    /* Forced mode: op-mode is set per measurement in captureBaselineForcedSample(). */
+
+    configuring = true;
+    collectStart = millis();
+    Serial.println(">> Config mode: collecting " + String(n) + " measurement(s) on profile [" + String(prof.name) + "]...");
+    Serial.println("   Send 'stop' to abort.");
+
+    /* ── impute [on|off] ────────────────────────────────────────────────── */
   } else if (cmd == "impute") {
     Serial.println(">> Imputation: " + String(imputationEnabled ? "ON" : "OFF"));
     Serial.println("   Use 'impute on' or 'impute off' to toggle.");
@@ -1116,12 +1285,13 @@ void handleCommand(const String &cmd) {
     imputationEnabled = false;
     Serial.println(">> Imputation disabled — incomplete cycles dropped (original behaviour).");
 
-  /* ── unknown ───────────────────────────────────────────────────────── */
+    /* ── unknown ───────────────────────────────────────────────────────── */
   } else {
     Serial.println(">> Unknown: '" + cmd + "'");
     Serial.println("   Commands: run | stop | clean [<sec>] | profile <N> | profiles");
     Serial.println("             sensors [list] | label [N] | accuracy | timing [reset] | status");
     Serial.println("             logfile [<name>] | logstart | logstop | impute [on|off]");
+    Serial.println("             config [<N>]");
   }
 }
 
@@ -1139,7 +1309,8 @@ void setup() {
 
   if (!initSensors()) {
     Serial.println("Halting.");
-    while (1);
+    while (1)
+      ;
   }
   Serial.print("Sensor(s) OK: ");
   for (uint8_t s = 0; s < numActiveSensors; s++) {
@@ -1149,13 +1320,14 @@ void setup() {
   Serial.println();
 
   /* ── TFLite Micro ────────────────────────────────────────────────── */
-  const tflite::Model* tfl_model = tflite::GetModel(g_model);
+  const tflite::Model *tfl_model = tflite::GetModel(g_model);
 
   if (tfl_model->version() != TFLITE_SCHEMA_VERSION) {
     Serial.println("ERR: Model schema version mismatch ("
                    + String(tfl_model->version()) + " vs expected "
                    + String(TFLITE_SCHEMA_VERSION) + ")");
-    while (1);
+    while (1)
+      ;
   }
 
   if (MODEL_TYPE == "LSTM") {
@@ -1182,16 +1354,17 @@ void setup() {
   }
 
   static tflite::MicroInterpreter static_interpreter(
-      tfl_model, resolver, tensor_arena, kTensorArenaSize);
+    tfl_model, resolver, tensor_arena, kTensorArenaSize);
   interpreter = &static_interpreter;
 
   if (interpreter->AllocateTensors() != kTfLiteOk) {
     Serial.println("ERR: AllocateTensors() failed — arena may be too small.");
-    while (1);
+    while (1)
+      ;
   }
 
-  TfLiteTensor* inp = interpreter->input(0);
-  TfLiteTensor* out = interpreter->output(0);
+  TfLiteTensor *inp = interpreter->input(0);
+  TfLiteTensor *out = interpreter->output(0);
   String inpShape = "";
   for (int d = 0; d < inp->dims->size; d++) {
     if (d > 0) inpShape += "x";
@@ -1200,12 +1373,12 @@ void setup() {
   Serial.println("Model OK  |  input " + inpShape
                  + "  output "
                  + String(out->dims->data[0]) + "x" + String(out->dims->data[1]));
-  Serial.println("Arena used: " + String(interpreter->arena_used_bytes()) +
-                 " / " + String(kTensorArenaSize) + " bytes");
+  Serial.println("Arena used: " + String(interpreter->arena_used_bytes()) + " / " + String(kTensorArenaSize) + " bytes");
   Serial.println("Active profile: 1 [" + String(PROFILES[0].name) + "]");
   Serial.println("Commands: run | stop | clean [<sec>] | profile <N> | profiles");
   Serial.println("          sensors [list] | label [N] | accuracy | timing [reset] | status");
   Serial.println("          logfile [<name>] | logstart | logstop | impute [on|off]");
+  Serial.println("          config [<N>]");
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1229,6 +1402,18 @@ void loop() {
 
   if (cleaning) {
     runCleanCycle();
+    return;
+  }
+
+  if (configuring) {
+    const HeatingProfile &prof = PROFILES[activeProfile];
+    if (prof.scanMode == SCAN_SEQUENTIAL) {
+      pollAllSensors();
+      delay(10);
+    } else {
+      captureBaselineForcedSample();
+      delay(500);
+    }
     return;
   }
 
