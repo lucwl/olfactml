@@ -9,6 +9,7 @@ void bleInit() {
   BLE.begin();
   BLE.setLocalName("OlfactML_Edge");
   BLE.setAdvertisedService(dataService);
+  dataService.addCharacteristic(streamCharacteristic);
   BLE.addService(dataService);
   BLE.advertise();
 
@@ -28,7 +29,7 @@ void bleStreamRow(uint8_t sensorIndex, uint32_t fingerprintIndex,
 
   snprintf(row, sizeof(row), "%u,%u,%u,%u,%u,%f,%f,%f,%f,%s", sensorIndex,
            fingerprintIndex, position, plateTemperature, heaterDuration,
-           temperature, pressure, humidity, gasResistance, label);
+           temperature, pressure, humidity, gasResistance, label.c_str());
 
   if (!central.connected()) {
     central = BLE.central();
