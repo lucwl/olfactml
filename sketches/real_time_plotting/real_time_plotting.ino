@@ -52,6 +52,7 @@
 #include "bme68xLibrary.h"
 #include "commMux.h"
 #include "sdLogger.h"
+#include "bleStreamer.h"
 
 /* Both bits must be set for a gas reading to be considered valid at the
  * intended heater temperature. */
@@ -372,6 +373,8 @@ void setup() {
   initSensor(sensorIdx);
   sdInit();
 
+  bleInit();
+
   Serial.println("Ready.");
   Serial.println("Commands: plot | record [1 2 …] | stop | verbose | 1-8");
   Serial.println("          profile <N> | profiles | filename <name> | label <text> | status");
@@ -478,6 +481,9 @@ void flushRowBuffer() {
   while (rowCount > 0) {
     const SdRow &r = rowBuffer[rowTail];
     sdLogRow(r.sensorNum, r.fpIdx, r.pos, r.plateTemp, r.heatDur,
+             r.temperature, r.pressure, r.humidity, r.gas, recordLabel);
+
+    bleStreamRow(r.sensorNum, r.fpIdx, r.pos, r.plateTemp, r.heatDur,
              r.temperature, r.pressure, r.humidity, r.gas, recordLabel);
     rowTail = (rowTail + 1) % ROW_BUFFER_SIZE;
     rowCount--;
