@@ -13,12 +13,16 @@ void bleInit() {
   BLE.addService(dataService);
   BLE.advertise();
 
+  Serial.println("Initialised BLE service");
+
   while (1) {
     central = BLE.central();
     if (central.connected() && streamCharacteristic.subscribed()) {
       return;
     }
   }
+
+  Serial.println("Connected to central");
 }
 
 void bleStreamRow(uint8_t sensorIndex, uint32_t fingerprintIndex,
