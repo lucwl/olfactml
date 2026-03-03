@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	DeviceName         = "Nano33BLE"
+	DeviceName         = "OlfactML_Edge"
 	ServiceUUID        = "88aadeff-64a4-47ae-8798-7d7e51b24e55"
 	CharacteristicUUID = "88aadeff-64a4-47ae-8798-7d7e51b24e56"
 )
