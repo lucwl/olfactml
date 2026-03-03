@@ -75,3 +75,6 @@ const float raw[NUM_FEATURES] = {
 ```
 
 Once you have these in place, flash the code, check `status` with a command. Run `config <n>` to calculate baseline to correct to, if relevant. Then start inference with `run`.
+
+You can edit the active sensors using the command `sensors <n, m, ...>`. Make sure that you run the sensors you have trained on, as there may be an offset between sensors. If you run inference with multiple sensors, the code is going to poll the sensors until a valid cycle is collected from *every* sensor. Then these values are averaged, giving us the final input array that is passed into the network.
+You might notice that this results in significant latency, since it is not rare for cycles to be dropped due to one or more missing steps. We can reduce this overhead by running `impute on`, which will replace missing values with the average across the successfully collected ones.
