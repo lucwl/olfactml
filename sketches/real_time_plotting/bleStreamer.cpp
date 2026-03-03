@@ -1,23 +1,26 @@
 #include "bleStreamer.h"
 
-BLEService dataService("88aadeff-64a4-47ae-8798-7d7e51b24e55");
-BLEStringCharacteristic
-    streamCharacteristic("88aadeff-64a4-47ae-8798-7d7e51b24e56", BLENotify, 20);
+BLEService *dataService;
+BLEStringCharacteristic *streamCharacteristic;
 BLEDevice central;
 
 void bleInit() {
   BLE.begin();
+
+  dataService = new BLEService("88aadeff-64a4-47ae-8798-7d7e51b24e55");
+  streamCharacteristic = new BLEStringCharacteristic("88aadeff-64a4-47ae-8798-7d7e51b24e56", BLENotify, 20);
+
   BLE.setLocalName("OlfactML_Edge");
-  BLE.setAdvertisedService(dataService);
-  dataService.addCharacteristic(streamCharacteristic);
-  BLE.addService(dataService);
+  BLE.setAdvertisedService(*dataService);
+  dataService->addCharacteristic(*streamCharacteristic);
+  BLE.addService(*dataService);
   BLE.advertise();
 
   Serial.println("Initialised BLE service");
 
   while (1) {
     central = BLE.central();
-    if (central.connected() && streamCharacteristic.subscribed()) {
+    if (central.connected() && streamCharacteristic->subscribed()) {
       return;
     }
   }
@@ -39,5 +42,5 @@ void bleStreamRow(uint8_t sensorIndex, uint32_t fingerprintIndex,
     central = BLE.central();
   }
 
-  streamCharacteristic.writeValue(row);
+  streamCharacteristic->writeValue(row);
 }
