@@ -2,19 +2,19 @@
 
 BLEService dataService("88aadeff-64a4-47ae-8798-7d7e51b24e55");
 BLEStringCharacteristic
-    streamCharacteristic("88aadeff-64a4-47ae-8798-7d7e51b24e56", BLENotify);
+    streamCharacteristic("88aadeff-64a4-47ae-8798-7d7e51b24e56", BLENotify, 20);
 BLEDevice central;
 
 void bleInit() {
   BLE.begin();
   BLE.setLocalName("OlfactML_Edge");
   BLE.setAdvertisedService(dataService);
-  BLE.addService(customService);
+  BLE.addService(dataService);
   BLE.advertise();
 
   while (1) {
     central = BLE.central();
-    if (central.connected() && dataCharacteristic.susbcribed()) {
+    if (central.connected() && streamCharacteristic.subscribed()) {
       return;
     }
   }
