@@ -34,6 +34,13 @@ SEQ_LEN = number of distinct plate temperatures.
     python csv_to_statistics_h.py data.csv --by-plate-temperature
     python csv_to_statistics_h.py data.csv --by-plate-temperature --temp-col plate_temperature
 
+**By-temp mode** — per-step statistics following an explicit temperature
+profile.  Each element in the profile maps to one heater step; rows at the
+same temperature are pooled.  SEQ_LEN = len(profile).
+
+    python csv_to_statistics_h.py data.csv --by-temp
+    python csv_to_statistics_h.py data.csv --by-temp --temp-profile 320 100 100 200 200 200 320 320 320
+
 Common options
 --------------
     --features  plate_temperature heater_duration temperature pressure humidity gas_resistance
@@ -115,6 +122,48 @@ def _read_describe_csv(path: Path) -> dict[str, dict[str, float]]:
             stat = row.pop(index_key).strip()
             rows[stat] = {col.strip(): float(val) for col, val in row.items() if val.strip()}
     return rows
+
+
+def _read_raw_csv_by_temp_profile(
+    path: Path,
+    temp_col: str,
+    profile: list[int],
+) -> list[tuple[int, dict[str, dict[str, float]]]]:
+    """Read raw CSV and return per-step statistics following a temperature profile.
+
+    Returns a list of ``(temperature, {"mean": {...}, "std": {...}})`` tuples,
+    one entry per element in *profile*, in order.  Rows sharing the same
+    temperature are pooled to compute each step's statistics.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        print("ERROR: --by-temp requires pandas.  Install it with: pip install pandas",
+              file=sys.stderr)
+        sys.exit(1)
+
+    df = pd.read_csv(path)
+    if temp_col not in df.columns:
+        raise KeyError(
+            f"Temperature column '{temp_col}' not found in CSV.  "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    # Pre-compute stats per unique temperature in the profile (pool rows)
+    temp_stats: dict[int, dict[str, dict[str, float]]] = {}
+    for temp in set(profile):
+        sub = df[df[temp_col] == temp]
+        if sub.empty:
+            raise ValueError(
+                f"No rows found for temperature {temp} in column '{temp_col}'.  "
+                f"Available: {sorted(df[temp_col].unique().tolist())}"
+            )
+        temp_stats[temp] = {
+            "mean": sub.mean(numeric_only=True).to_dict(),
+            "std":  sub.std(numeric_only=True).to_dict(),
+        }
+
+    return [(temp, temp_stats[temp]) for temp in profile]
 
 
 def _read_raw_csv_by_position(
@@ -318,6 +367,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Rows with the same plate temperature are pooled across positions."
         ),
     )
+    mode_group.add_argument(
+        "--by-temp",
+        action="store_true",
+        dest="by_temp",
+        help=(
+            "Compute per-step statistics from a raw data CSV following an explicit "
+            "temperature profile (see --temp-profile).  Each profile element maps to "
+            "one heater step; rows at that temperature are pooled.  "
+            "STATS_SEQ_LEN = len(profile)."
+        ),
+    )
+    parser.add_argument(
+        "--temp-profile",
+        nargs="+",
+        metavar="TEMP",
+        type=int,
+        default=[320, 100, 100, 200, 200, 200, 320, 320, 320],
+        dest="temp_profile",
+        help=(
+            "Temperature profile as a space-separated sequence of setpoints (°C), "
+            "one per heater step.  Only used with --by-temp.  "
+            "Default: 320 100 100 200 200 200 320 320 320 (standard BME profile)."
+        ),
+    )
     parser.add_argument(
         "--position-col",
         metavar="COL",
@@ -410,6 +483,23 @@ def main(argv: list[str] | None = None) -> None:
 
         per_step_stats = [
             (f"{int(temp)} °C", {"mean": s["mean"], "std": s["std"]})
+            for temp, s in raw_steps
+        ]
+
+    elif args.by_temp:
+        profile = args.temp_profile
+        mode_label = (
+            f"by-temp-profile (column '{args.temp_col}', "
+            f"profile: {' '.join(str(t) for t in profile)})"
+        )
+        try:
+            raw_steps = _read_raw_csv_by_temp_profile(input_path, args.temp_col, profile)
+        except Exception as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        per_step_stats = [
+            (f"{temp} °C", {"mean": s["mean"], "std": s["std"]})
             for temp, s in raw_steps
         ]
 
