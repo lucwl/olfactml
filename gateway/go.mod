@@ -1,4 +1,4 @@
-module github.com/lucwl/olfactml/server
+module github.com/lucwl/olfactml/gateway
 
 go 1.24.5
 
