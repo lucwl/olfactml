@@ -1,9 +1,9 @@
 /**
  * Data Collection — BME688 Dev Kit
  *
- * Plan-based data collection: runs a pre-defined sequence of timed logging
- * stages, each preceded and followed by an ambience-detection stage that
- * confirms the environment has stabilised before the next recording begins.
+ * Plan-based data collection: runs a pre-defined sequence of timed recording
+ * stages separated by optional cleaning phases.  The user controls progression
+ * via the 'next' serial command.
  *
  * ── Collection plan ───────────────────────────────────────────────────────
  *   Edit the PLAN[] array (near the top of this file) to define each step:
@@ -12,26 +12,17 @@
  *     durationSec         — recording duration in seconds (auto-stops)
  *     sensorProfiles[8]   — 1-based heating profile ID per sensor; 0 = inactive
  *     cleaningDurationSec — sensors run unlogged for this many seconds after
- *                           the recording stage, before ambience detection begins
- *
- * ── Ambience detection ────────────────────────────────────────────────────
- *   The board polls sensors continuously but logs nothing.  Ambience is
- *   declared when, within a sliding window of AMBIENCE_WINDOW consecutive
- *   readings, at most PATIENCE of them had any feature deviate more than
- *   AMBIENCE_THRESHOLD (ratio) from the preceding reading of that sensor.
- *   Progress is printed every 5 readings.
+ *                           the recording stage ends.  0 = skip cleaning.
  *
  * ── Stage sequence ────────────────────────────────────────────────────────
- *   start              → WAITING; send 'next' to begin ambience detection
- *   next               → AMBIENCE (step 0)
- *   ambience reached   → baseline computed; board notifies; waits for 'next'
+ *   start              → WAITING; send 'next' to begin step 1
  *   next               → RECORDING (timed, auto-stops)
  *   recording done     → CLEANING (timed) → WAITING; send 'next' → …
  *   all steps done     → IDLE, "Collection complete"
  *
  * ── Serial commands ───────────────────────────────────────────────────────
- *   start    — begin data collection (initial ambience stage)
- *   next     — start recording once ambience is reached
+ *   start    — begin data collection
+ *   next     — start recording the current step (when WAITING)
  *   stop     — abort and return to idle
  *   verbose  — toggle per-reading output to Serial
  *   status   — print current state and timing
@@ -141,32 +132,9 @@ const HeatingProfile PROFILES[] = {
     {200,180,160,150,150,140,140,140,140,140},
     BME68X_ODR_500_MS
   },
-  {
-    "Seq_Step",
-    "[S] Wide sweep 100->450 C (10 steps, longer dwell at low temps, 500 ms ODR sleep)",
-    SCAN_SEQUENTIAL, 0, 0, 10,
-    {100,200,320},
-    {150,150,150},
-    BME68X_ODR_500_MS
-  },
 };
 
 const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
-
-/* ═══════════════════════════════════════════════════════════════════════
- * Ambience detection parameters
- * ═══════════════════════════════════════════════════════════════════════ */
-
-/* Number of consecutive readings that form the evaluation window. */
-#define AMBIENCE_WINDOW    10
-
-/* Maximum number of "bad" readings (any feature deviates too much vs. the
- * preceding reading) allowed within the window for ambience to be declared. */
-#define PATIENCE           3
-
-/* Maximum allowed fractional deviation between consecutive readings of any
- * feature.  0.05 = 5 %. */
-#define AMBIENCE_THRESHOLD 0.2f
 
 /* ═══════════════════════════════════════════════════════════════════════
  * Collection plan  ← edit this section
@@ -177,7 +145,7 @@ const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
  *   Profile IDs: send 'profiles' over Serial to see the full list.
  *
  * cleaningDurationSec: wait time (seconds) after a recording stage ends before
- *   ambience detection for the next step begins.  0 = skip cleaning phase.
+ *   the next step becomes available.  0 = skip cleaning phase.
  */
 
 struct CollectionStep {
@@ -190,14 +158,13 @@ struct CollectionStep {
 
 const CollectionStep PLAN[] = {
   /* filename           label       dur(s)  sensors[8]                         clean(s) */
-  { "cinnamon_baseline",    "cinnamon_baseline",        120,  { 11, 11, 11, 11, 4, 4, 13, 13 },      20 },
-  { "cinnamon_sample",    "cinnamon",      180,  { 11, 11, 11, 11, 4, 4, 13, 13 },      20 },
-  { "thyme_baseline", "thyme_baseline",   120,  { 11, 11, 11, 11, 4, 4, 13, 13 },      20 },
-  { "thyme_sample", "thyme",   180,  { 11, 11, 11, 11, 4, 4, 13, 13 },      20 },
-  { "turmeric_baseline", "turmeric_baseline",   120,  { 11, 11, 11, 11, 4, 4, 13, 13 },      20 },
-  { "turmeric_sample", "turmeric",   180,  { 11, 11, 11, 11, 4, 4, 13, 13 },      20 },
-  { "basil_baseline", "basil_baseline",   120,  { 11, 11, 11, 11, 4, 4, 13, 13 },      20 },
-  { "basil_sample", "basil",   180,  { 11, 11, 11, 11, 4, 4, 13, 13 },      20 },
+  //{ "setup",    "setup_air",        120,  { 9, 9, 11, 11, 4, 4, 8, 8 },      20 },
+  { "lavender_baseline",    "lavender_baseline",        180,  { 9, 9, 11, 11, 9, 9, 11, 11 },      20 },
+  { "lavender_sample", "lavender", 300,  { 9, 9, 11, 11, 9, 9, 11, 11 },      20 },
+  { "grapefruit_baseline",    "grapefruit_baseline",      180,  { 9, 9, 11, 11, 9, 9, 11, 11 },      20 },
+  { "grapefruit_sample",    "grapefruit",      300,  { 9, 9, 11, 11, 9, 9, 11, 11 },      20 },
+  { "eucalyptus_baseline", "eucalyptus_baseline",   180,  { 9, 9, 11, 11, 9, 9, 11, 11 },      20 },
+  { "eucalyptus_sample", "eucalyptus",   300,  { 9, 9, 11, 11, 9, 9, 11, 11 },      20 },
 };
 
 const uint8_t NUM_PLAN_STEPS = sizeof(PLAN) / sizeof(PLAN[0]);
@@ -216,7 +183,7 @@ uint16_t sharedHeatrDur[8] = {0,0,0,0,0,0,0,0};
 uint8_t  activeSensors[8];
 uint8_t  activeSensorCount = 0;
 
-enum Mode { IDLE, WAITING, AMBIENCE, CLEANING, RECORDING };
+enum Mode { IDLE, WAITING, CLEANING, RECORDING };
 Mode     mode = IDLE;
 
 uint8_t  planStep      = 0;   /* upcoming or current step index (0-based)   */
@@ -257,46 +224,9 @@ static uint8_t rowHead  = 0;
 static uint8_t rowTail  = 0;
 static uint8_t rowCount = 0;
 
-/* ── Ambience tracking ─────────────────────────────────────────────────
- * Circular window of per-iteration "bad" flags. */
-static bool     ambiWindowBad[AMBIENCE_WINDOW] = {false};
-static uint8_t  ambiWindowPos   = 0;
-static uint8_t  ambiBadCount    = 0;
-static uint32_t ambiTotalCount  = 0;
-static bool     ambienceAchieved = false;
-
-/* Per-sensor previous reading (for deviation comparison) */
-static float ambiPrevT[8]      = {0};
-static float ambiPrevH[8]      = {0};
-static float ambiPrevP[8]      = {0};
-static float ambiPrevG[8][10]  = {{0}};
-static bool  ambiPrevInit[8]   = {false};
-
-/* Set by checkAmbienceReading(); consumed by processAmbienceWindow() */
-static bool ambiGotNew[8]      = {false};
-static bool ambiReadingBad[8]  = {false};
-
 /* LED blink (1 Hz during RECORDING) */
 uint32_t lastLedToggle = 0;
 bool     ledState      = false;
-
-/* ── Ambience window storage for baseline computation ──────────────────────
- * Circular buffer of the last AMBIENCE_WINDOW readings per sensor.
- * Indexed [sensor][feature_step][window_slot]. */
-static float   ambiWinT[8][AMBIENCE_WINDOW];
-static float   ambiWinH[8][AMBIENCE_WINDOW];
-static float   ambiWinP[8][AMBIENCE_WINDOW];
-static float   ambiWinG[8][10][AMBIENCE_WINDOW];
-static uint8_t ambiWinPos[8];    /* circular write head per sensor */
-static uint8_t ambiWinFill[8];   /* 0..AMBIENCE_WINDOW             */
-
-/* Baseline: mean over the ambience window; set when ambience is declared.
- * T/H/P are per-sensor; G is per-sensor per heater step. */
-static float   baselineT[8]     = {0};
-static float   baselineH[8]     = {0};
-static float   baselineP[8]     = {0};
-static float   baselineG[8][10] = {{0}};
-static bool    baselineValid     = false;
 
 /* ═══════════════════════════════════════════════════════════════════════
  * LED helper
@@ -392,194 +322,19 @@ void initActiveSensors(uint8_t step) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
- * Ambience detection
- * ═══════════════════════════════════════════════════════════════════════ */
-
-void resetAmbienceTracking() {
-  memset(ambiWindowBad,  0, sizeof(ambiWindowBad));
-  ambiWindowPos    = 0;
-  ambiBadCount     = 0;
-  ambiTotalCount   = 0;
-  ambienceAchieved = false;
-  memset(ambiPrevInit,   0, sizeof(ambiPrevInit));
-  memset(ambiGotNew,     0, sizeof(ambiGotNew));
-  memset(ambiReadingBad, 0, sizeof(ambiReadingBad));
-  memset(ambiWinT,   0, sizeof(ambiWinT));
-  memset(ambiWinH,   0, sizeof(ambiWinH));
-  memset(ambiWinP,   0, sizeof(ambiWinP));
-  memset(ambiWinG,   0, sizeof(ambiWinG));
-  memset(ambiWinPos, 0, sizeof(ambiWinPos));
-  memset(ambiWinFill,0, sizeof(ambiWinFill));
-  baselineValid = false;
-}
-
-/* Called when sensor si delivers one complete reading (forced measurement or
- * a completed parallel/sequential scan cycle).  Compares to the previous
- * reading and flags it "bad" if any feature exceeds AMBIENCE_THRESHOLD. */
-void checkAmbienceReading(uint8_t si,
-                          float temp, float hum, float pres,
-                          float *gasVals, uint8_t gasLen) {
-  /* Store in rolling window for baseline computation. */
-  uint8_t wp = ambiWinPos[si];
-  ambiWinT[si][wp] = temp;
-  ambiWinH[si][wp] = hum;
-  ambiWinP[si][wp] = pres;
-  for (uint8_t g = 0; g < gasLen && g < 10; g++)
-    ambiWinG[si][g][wp] = gasVals[g];
-  ambiWinPos[si]  = (wp + 1) % AMBIENCE_WINDOW;
-  if (ambiWinFill[si] < AMBIENCE_WINDOW) ambiWinFill[si]++;
-
-  if (!ambiPrevInit[si]) {
-    /* First reading — just establish the baseline; don't add to window. */
-    ambiPrevT[si] = temp;
-    ambiPrevH[si] = hum;
-    ambiPrevP[si] = pres;
-    for (uint8_t g = 0; g < gasLen; g++) ambiPrevG[si][g] = gasVals[g];
-    ambiPrevInit[si]   = true;
-    ambiGotNew[si]     = true;
-    ambiReadingBad[si] = false;
-    return;
-  }
-
-  bool bad = false;
-  auto devCheck = [&](float prev, float curr) {
-    if (fabsf(prev) < 1e-4f) return;
-    if (fabsf((curr - prev) / prev) > AMBIENCE_THRESHOLD) bad = true;
-  };
-  devCheck(ambiPrevT[si], temp);
-  devCheck(ambiPrevH[si], hum);
-  devCheck(ambiPrevP[si], pres);
-  for (uint8_t g = 0; g < gasLen; g++) {
-    if (ambiPrevG[si][g] > 1.0f) devCheck(ambiPrevG[si][g], gasVals[g]);
-  }
-
-  ambiPrevT[si] = temp;
-  ambiPrevH[si] = hum;
-  ambiPrevP[si] = pres;
-  for (uint8_t g = 0; g < gasLen; g++) ambiPrevG[si][g] = gasVals[g];
-
-  ambiGotNew[si]     = true;
-  ambiReadingBad[si] = bad;
-
-  if (verboseMode) {
-    Serial.print("  S"); Serial.print(si + 1);
-    Serial.print(" T=");  Serial.print(temp, 1);
-    Serial.print(" H=");  Serial.print(hum, 1);
-    Serial.print(" P=");  Serial.print(pres, 1);
-    Serial.print(" G=");
-    for (uint8_t g = 0; g < gasLen; g++) {
-      if (g) Serial.print(",");
-      Serial.print(gasVals[g], 0);
-    }
-    if (bad) Serial.print("  [BAD]");
-    Serial.println();
-  }
-}
-
-/* Called once per main-loop iteration after all sensors are polled.
- * Consolidates per-sensor flags into one window entry and checks for
- * ambience achievement. */
-void processAmbienceWindow() {
-  bool anyNew = false;
-  bool anyBad = false;
-  for (uint8_t i = 0; i < activeSensorCount; i++) {
-    uint8_t si = activeSensors[i];
-    if (ambiGotNew[si]) {
-      anyNew = true;
-      if (ambiReadingBad[si]) anyBad = true;
-      ambiGotNew[si]     = false;
-      ambiReadingBad[si] = false;
-    }
-  }
-  if (!anyNew) return;
-
-  /* Update circular window. */
-  if (ambiTotalCount >= AMBIENCE_WINDOW) {
-    if (ambiWindowBad[ambiWindowPos]) ambiBadCount--;
-  }
-  ambiWindowBad[ambiWindowPos] = anyBad;
-  if (anyBad) ambiBadCount++;
-  ambiWindowPos = (ambiWindowPos + 1) % AMBIENCE_WINDOW;
-  ambiTotalCount++;
-
-  /* Print progress every 5 readings. */
-  if (ambiTotalCount % 5 == 0) {
-    uint8_t filled = (uint8_t)min((uint32_t)AMBIENCE_WINDOW, ambiTotalCount);
-    Serial.print("  Ambience ["); Serial.print(ambiTotalCount);
-    Serial.print("]: bad="); Serial.print(ambiBadCount);
-    Serial.print("/"); Serial.print(filled);
-    Serial.print("  (need <="); Serial.print(PATIENCE);
-    Serial.print(" bad in last "); Serial.print(AMBIENCE_WINDOW);
-    Serial.println(" readings)");
-  }
-
-  if (!ambienceAchieved &&
-      ambiTotalCount >= AMBIENCE_WINDOW &&
-      ambiBadCount   <= PATIENCE) {
-    ambienceAchieved = true;
-
-    /* Compute per-sensor baseline as mean over the ambience window. */
-    for (uint8_t i = 0; i < activeSensorCount; i++) {
-      uint8_t si   = activeSensors[i];
-      uint8_t fill = ambiWinFill[si];
-      if (fill == 0) continue;
-      float sumT = 0, sumH = 0, sumP = 0, sumG[10] = {0};
-      for (uint8_t w = 0; w < fill; w++) {
-        sumT += ambiWinT[si][w];
-        sumH += ambiWinH[si][w];
-        sumP += ambiWinP[si][w];
-        for (uint8_t g = 0; g < 10; g++) sumG[g] += ambiWinG[si][g][w];
-      }
-      baselineT[si] = sumT / fill;
-      baselineH[si] = sumH / fill;
-      baselineP[si] = sumP / fill;
-      for (uint8_t g = 0; g < 10; g++) baselineG[si][g] = sumG[g] / fill;
-      Serial.print("   Baseline S"); Serial.print(si + 1);
-      Serial.print(": T="); Serial.print(baselineT[si], 1);
-      Serial.print(" H="); Serial.print(baselineH[si], 1);
-      Serial.print(" P="); Serial.print(baselineP[si], 1);
-      Serial.print(" G[0]="); Serial.print(baselineG[si][0], 0);
-      Serial.println();
-    }
-    baselineValid = true;
-
-    Serial.println(">> AMBIENCE REACHED!");
-    if (planStep < NUM_PLAN_STEPS) {
-      Serial.println(">> Step " + String(planStep + 1) + "/" + String(NUM_PLAN_STEPS) +
-                     ":  file=" + String(PLAN[planStep].filename) +
-                     "  label=" + String(PLAN[planStep].label) +
-                     "  duration=" + String(PLAN[planStep].durationSec) + "s");
-    } else {
-      Serial.println(">> All steps complete. Send 'stop' to finish.");
-    }
-    Serial.println(">> Send 'next' to start recording.");
-  }
-}
-
-/* ═══════════════════════════════════════════════════════════════════════
  * Verbose row helper  (used during RECORDING)
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* Verbose print during RECORDING.  When a baseline is available, values are
- * fractionally scaled: x_scaled = (x - baseline) / (baseline + 1e-6). */
 void verbosePrint(uint8_t sensorNum, uint32_t fpIdx, uint8_t pos,
                   uint16_t plateTemp, uint16_t heatDur,
                   float temp, float pres, float hum, float gas) {
-  float dispT = temp, dispH = hum, dispP = pres, dispG = gas;
-  if (baselineValid) {
-    uint8_t si = sensorNum - 1;
-    dispT = (temp - baselineT[si]) / (baselineT[si] + 1e-6f);
-    dispH = (hum  - baselineH[si]) / (baselineH[si] + 1e-6f);
-    dispP = (pres - baselineP[si]) / (baselineP[si] + 1e-6f);
-    dispG = (gas  - baselineG[si][pos]) / (baselineG[si][pos] + 1e-6f);
-  }
   Serial.print("S"); Serial.print(sensorNum);
   Serial.print(" fp="); Serial.print(fpIdx);
   Serial.print(" pos="); Serial.print(pos);
-  Serial.print(" | T="); Serial.print(dispT, baselineValid ? 4 : 1);
-  Serial.print(" H="); Serial.print(dispH, baselineValid ? 4 : 1);
-  Serial.print(" P="); Serial.print(dispP, baselineValid ? 4 : 1);
-  Serial.print(" G="); Serial.print(dispG, baselineValid ? 4 : 0);
+  Serial.print(" | T="); Serial.print(temp, 1);
+  Serial.print(" H="); Serial.print(hum, 1);
+  Serial.print(" P="); Serial.print(pres, 1);
+  Serial.print(" G="); Serial.print(gas, 0);
   Serial.print(" | plate="); Serial.print(plateTemp);
   Serial.print("C dur="); Serial.print(heatDur);
   Serial.println("ms");
@@ -607,13 +362,15 @@ void pushRow(uint8_t sensorNum, uint32_t fpIdx, uint8_t pos,
   rowCount++;
 }
 
-void flushRowBuffer() {
-  while (rowCount > 0) {
+void flushRowBuffer(uint8_t maxRows = 4) {
+  uint8_t written = 0;
+  while (rowCount > 0 && written < maxRows) {
     const SdRow &r = rowBuffer[rowTail];
     sdLogRow(r.sensorNum, r.fpIdx, r.pos, r.plateTemp, r.heatDur,
              r.temperature, r.pressure, r.humidity, r.gas, recordLabel);
     rowTail = (rowTail + 1) % ROW_BUFFER_SIZE;
     rowCount--;
+    written++;
   }
 }
 
@@ -633,12 +390,6 @@ void takeForcedMeasurement(uint8_t si) {
   if (!(data.status & BME68X_GASM_VALID_MSK)) return;
   if (!(data.status & BME68X_HEAT_STAB_MSK))  return;
 
-  if (mode == AMBIENCE) {
-    float gasVal = data.gas_resistance;
-    checkAmbienceReading(si, data.temperature, data.humidity,
-                         data.pressure / 100.0f, &gasVal, 1);
-  }
-
   if (mode == RECORDING) {
     const HeatingProfile &prof = PROFILES[sensorProfile[si]];
     pushRow(si + 1, fingerprintIndex[si], 0,
@@ -655,9 +406,8 @@ void takeForcedMeasurement(uint8_t si) {
 }
 
 /* Poll for new parallel-mode samples from sensor si.
- * AMBIENCE  : check convergence at each completed scan cycle.
- * RECORDING : log each individual step; all steps of a cycle share the same
- *             fingerprintIndex. */
+ * RECORDING: log each individual step; all steps of a cycle share the same
+ *            fingerprintIndex. */
 void pollParallelMeasurement(uint8_t si) {
   const HeatingProfile &prof = PROFILES[sensorProfile[si]];
   uint8_t nFields = bme.fetchData();
@@ -672,10 +422,6 @@ void pollParallelMeasurement(uint8_t si) {
 
     /* Cycle boundary: gas_index wraps backwards → previous cycle is complete. */
     if (lastGasIdx[si] >= 0 && (int8_t)gi < lastGasIdx[si]) {
-      if (mode == AMBIENCE) {
-        checkAmbienceReading(si, lastTemp[si], lastHum[si], lastPres[si],
-                             gasBuffer[si], prof.profileLen);
-      }
       if (cycleHasData[si]) fingerprintIndex[si]++;
       cycleHasData[si] = false;
       resetGasBuffer(si, prof.profileLen);
@@ -724,10 +470,6 @@ void pollSequentialMeasurement(uint8_t si) {
     uint8_t gi = data.gas_index;
 
     if (lastGasIdx[si] >= 0 && (int8_t)gi < lastGasIdx[si]) {
-      if (mode == AMBIENCE) {
-        checkAmbienceReading(si, lastTemp[si], lastHum[si], lastPres[si],
-                             gasBuffer[si], prof.profileLen);
-      }
       if (cycleHasData[si]) fingerprintIndex[si]++;
       cycleHasData[si] = false;
       resetGasBuffer(si, prof.profileLen);
@@ -763,9 +505,7 @@ void pollSequentialMeasurement(uint8_t si) {
  * Stage transition helpers
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* Put all active sensors to sleep, clear activeSensorCount, and move to
- * WAITING.  Called after recording or cleaning when the next ambience phase
- * should not start until the user types 'next'. */
+/* Put all active sensors to sleep and move to WAITING. */
 void enterWaitingStage() {
   for (uint8_t i = 0; i < activeSensorCount; i++) {
     commSetup = commMuxSetConfig(Wire, SPI, activeSensors[i], commSetup);
@@ -777,24 +517,7 @@ void enterWaitingStage() {
     Serial.println(">> Step " + String(planStep + 1) + "/" + String(NUM_PLAN_STEPS) +
                    ":  file=" + String(PLAN[planStep].filename) +
                    "  label=" + String(PLAN[planStep].label));
-  Serial.println(">> Send 'next' to begin ambience detection.");
-}
-
-void enterAmbienceStage() {
-  initActiveSensors(planStep);
-  resetAmbienceTracking();
-  mode = AMBIENCE;
-  Serial.println(">> AMBIENCE stage — waiting for environment to stabilise...");
-  Serial.print("   Sensors:");
-  for (uint8_t i = 0; i < activeSensorCount; i++) {
-    uint8_t si = activeSensors[i];
-    Serial.print(" S" + String(si + 1) +
-                 "[" + String(PROFILES[sensorProfile[si]].name) + "]");
-  }
-  Serial.println();
-  Serial.println("   window=" + String(AMBIENCE_WINDOW) +
-                 "  patience=" + String(PATIENCE) +
-                 "  threshold=" + String(AMBIENCE_THRESHOLD * 100.0f, 1) + "%");
+  Serial.println(">> Send 'next' to start recording.");
 }
 
 void enterCleaningStage(uint32_t durationSec) {
@@ -805,6 +528,7 @@ void enterCleaningStage(uint32_t durationSec) {
 }
 
 void startRecordingStage() {
+  initActiveSensors(planStep);
   String filename = String(PLAN[planStep].filename);
   if (!sdOpenFile(filename)) {
     Serial.println(">> Recording aborted — SD card error.");
@@ -857,20 +581,12 @@ void handleCommand(const String &cmd) {
   } else if (cmd == "next") {
     if (mode == WAITING) {
       if (planStep < NUM_PLAN_STEPS) {
-        enterAmbienceStage();
-      } else {
-        Serial.println(">> All steps done. Send 'stop'.");
-      }
-    } else if (mode == AMBIENCE && ambienceAchieved) {
-      if (planStep >= NUM_PLAN_STEPS) {
-        Serial.println(">> All steps done. Send 'stop'.");
-      } else {
         startRecordingStage();
+      } else {
+        Serial.println(">> All steps done. Send 'stop'.");
       }
-    } else if (mode == AMBIENCE && !ambienceAchieved) {
-      Serial.println(">> Ambience not yet reached — please wait.");
     } else {
-      Serial.println(">> 'next' is only valid in WAITING or after ambience is reached.");
+      Serial.println(">> 'next' is only valid when WAITING between steps.");
     }
 
   /* ── stop ──────────────────────────────────────────────────────────── */
@@ -881,7 +597,6 @@ void handleCommand(const String &cmd) {
     }
     activeSensorCount = 0;
     rowCount = 0; rowHead = 0; rowTail = 0;
-    baselineValid = false;
     mode = IDLE;
     Serial.println(">> Stopped. Send 'start' to begin again.");
 
@@ -893,7 +608,6 @@ void handleCommand(const String &cmd) {
   /* ── status ────────────────────────────────────────────────────────── */
   } else if (cmd == "status") {
     const char *mStr = (mode == RECORDING) ? "RECORDING" :
-                       (mode == AMBIENCE)  ? "AMBIENCE"  :
                        (mode == CLEANING)  ? "CLEANING"  :
                        (mode == WAITING)   ? "WAITING"   : "IDLE";
     Serial.println("Mode    : " + String(mStr));
@@ -907,12 +621,6 @@ void handleCommand(const String &cmd) {
         uint8_t si = activeSensors[i];
         Serial.println("  S" + String(si + 1) + " fp=" + String(fingerprintIndex[si]));
       }
-    }
-    if (mode == AMBIENCE) {
-      uint8_t filled = (uint8_t)min((uint32_t)AMBIENCE_WINDOW, ambiTotalCount);
-      Serial.println("Ambience: " + String(ambiTotalCount) +
-                     " readings, bad=" + String(ambiBadCount) + "/" + String(filled) +
-                     "  achieved=" + String(ambienceAchieved ? "YES" : "NO"));
     }
     if (mode == CLEANING) {
       uint32_t elapsed = millis() - stageStartMs;
@@ -1035,9 +743,6 @@ void loop() {
         enterWaitingStage();
       }
     }
-
-  } else if (mode == AMBIENCE) {
-    processAmbienceWindow();
 
   } else if (mode == CLEANING) {
     /* Check whether the cleaning phase has elapsed. */
