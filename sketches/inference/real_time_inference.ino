@@ -62,7 +62,8 @@ const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
 /* Model configuration */
 constexpr int kTensorArenaSize = 32 * 1024;
 constexpr int NUM_CLASSES  = 5;
-constexpr int NUM_FEATURES = 8;
+// constexpr int NUM_FEATURES = 8;
+constexpr int NUM_FEATURES = 4;
 
 const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "basil", "cinnamon", "oregano", "rosemary"};
 
@@ -74,14 +75,21 @@ uint8_t  sensorIdx     = 0;
 uint8_t  activeProfile = 1;  // default to LinSweep (10-step profile)
 bool     running       = false;
 
-/* Scan accumulation */
-float   gasBuffer[10];
-float   gasDiffBuffer[10];
-bool    gasReceived[10];
-float   lastTemp = 0, lastHum = 0, lastPres = 0;
-float   diffTemp = 0, diffHum = 0, diffPres = 0;
-int8_t  lastGasIdx   = -1;
-bool    cycleHasData = false;
+/* Scan accumulation - per sensor */
+float gasBuffer[8][10];
+float tempBuffer[8][10];
+float humBuffer[8][10];
+float presBuffer[8][10];
+
+bool    gasReceived[8][10];
+float   lastTemp[8] = {0};
+float   lastHum[8] = {0};
+float   lastPres[8] = {0};
+float   diffTemp[8] = {0};
+float   diffHum[8] = {0};
+float   diffPres[8] = {0};
+int8_t  lastGasIdx[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+bool    cycleHasData[8] = {false};
 
 String cmdBuffer = "";
 
@@ -91,24 +99,28 @@ static tflite::MicroMutableOpResolver<5> resolver;
 static tflite::MicroInterpreter* interpreter = nullptr;
 
 /* z-score normalization */
-inline float standardise(float value, int step, int feat) {
-  return (value - FEATURE_MEAN[step][feat]) / FEATURE_STD[step][feat];
+inline float standardise(float value, uint8_t si, int feat) {
+  return (value - FEATURE_MEAN[si][feat]) / FEATURE_STD[si][feat];
 }
 
 /* Helpers */
 
-void resetGasBuffer(uint8_t len) {
+void resetBuffers(uint8_t si, uint8_t len) {
   for (uint8_t i = 0; i < len; i++) {
-    gasBuffer[i]   = 0.0f;
-    gasReceived[i] = false;
+    gasBuffer[si][i]   = 0.0f;
+    tempBuffer[si][i]  = 0.0f;
+    humBuffer[si][i]   = 0.0f;
+    presBuffer[si][i]  = 0.0f;
+
+    gasReceived[si][i] = false;
   }
-  lastGasIdx = -1;
+  lastGasIdx[si] = -1;
 }
 
-bool validateScanSize(uint8_t profileLen) {
+bool validateScanSize(uint8_t si, uint8_t profileLen) {
   uint8_t got = 0;
   for (uint8_t i = 0; i < profileLen; i++) {
-    if (gasReceived[i]) got++;
+    if (gasReceived[si][i]) got++;
   }
   if (got != profileLen) {
     Serial.print("[WARN] Incomplete scan: ");
@@ -122,7 +134,7 @@ bool validateScanSize(uint8_t profileLen) {
 }
 
 /* Inference */
-void runInference(const HeatingProfile &prof) {
+void runInference(const HeatingProfile &prof, uint8_t si) {
   TfLiteTensor* inp = interpreter->input(0);
 
   if (inp->dims->size != 3) {
@@ -141,20 +153,16 @@ void runInference(const HeatingProfile &prof) {
 
   for (uint8_t t = 0; t < prof.profileLen; t++) {
     const float raw[NUM_FEATURES] = {
-      lastTemp,
-      lastPres,
-      lastHum,
-      gasBuffer[t],
-      diffTemp,
-      diffPres,
-      diffHum,
-      gasDiffBuffer[t],
+      lastTemp[si],
+      lastPres[si],
+      lastHum[si],
+      gasBuffer[si][t],
     };
 
     Serial.print("Input array: ");
     int base = t * NUM_FEATURES;
     for (int i = 0; i < NUM_FEATURES; i++) {
-      inp->data.f[base + i] = (FEATURE_STD[t][i] != 0.0f) ? standardise(raw[i], t, i) : raw[i];
+      inp->data.f[base + i] = (FEATURE_STD[si][i] != 0.0f) ? standardise(raw[i], si, i) : raw[i];
       Serial.print(" ");
       Serial.print(inp->data.f[base + i]);
       Serial.print(" ");
@@ -228,7 +236,49 @@ bool initSensor() {
 }
 
 /* Measurement polling */
-void pollMeasurement() {
+// void pollMeasurement() {
+//   const HeatingProfile &prof = PROFILES[activeProfile];
+//
+//   uint8_t nFields = bme.fetchData();
+//   if (nFields == 0) return;
+//
+//   bme68xData data;
+//   for (uint8_t f = 0; f < nFields; f++) {
+//     bme.getData(data);
+//     if (!(data.status & BME68X_NEW_DATA_MSK)) continue;
+//
+//     uint8_t gi = data.gas_index;
+//
+//     /* Cycle boundary detected by gas_index wrap-around */
+//     if (lastGasIdx >= 0 && (int8_t)gi < lastGasIdx) {
+//       if (cycleHasData && validateScanSize(prof.profileLen)) {
+//         Serial.print("Complete " + String(prof.profileLen) + "-step scan — ");
+//         runInference(prof);
+//       }
+//       cycleHasData = false;
+//       resetGasBuffer(prof.profileLen);
+//     }
+//
+//     diffTemp = (lastTemp == 0.0f) ? 0.0f : (data.temperature - lastTemp);
+//     diffHum  = (lastHum == 0.0f) ? 0.0f : (data.humidity - lastHum);
+//     diffPres = (lastPres == 0.0f) ? 0.0f : (data.pressure / 100.0f - lastPres);
+//
+//     lastTemp = data.temperature;
+//     lastHum  = data.humidity;
+//     lastPres = data.pressure / 100.0f;
+//
+//     if ((data.status & GAS_VALID_MSK) == GAS_VALID_MSK) {
+//       gasDiffBuffer[gi] = (gi == 0) ? 0.0f : (gasReceived[gi - 1] ? (data.gas_resistance - gasBuffer[gi - 1]) : 0.0f);
+//       gasBuffer[gi]   = data.gas_resistance;
+//       gasReceived[gi] = true;
+//       cycleHasData    = true;
+//     }
+//
+//     lastGasIdx = (int8_t)gi;
+//   }
+// }
+
+void pollSequentialMeasurement(uint8_t si) {
   const HeatingProfile &prof = PROFILES[activeProfile];
 
   uint8_t nFields = bme.fetchData();
@@ -241,32 +291,32 @@ void pollMeasurement() {
 
     uint8_t gi = data.gas_index;
 
-    /* Cycle boundary detected by gas_index wrap-around */
-    if (lastGasIdx >= 0 && (int8_t)gi < lastGasIdx) {
-      if (cycleHasData && validateScanSize(prof.profileLen)) {
+    // Runs inference at the end of each heating cycle
+    if (lastGasIdx[si] >= 0 && (int8_t)gi < lastGasIdx[si]) {
+      if (cycleHasData[si] && validateScanSize(si, prof.profileLen)) {
         Serial.print("Complete " + String(prof.profileLen) + "-step scan — ");
-        runInference(prof);
+        runInference(prof, si);
       }
-      cycleHasData = false;
-      resetGasBuffer(prof.profileLen);
+      cycleHasData[si] = false;
+      resetBuffers(si, prof.profileLen);
     }
 
-    diffTemp = (lastTemp == 0.0f) ? 0.0f : (data.temperature - lastTemp);
-    diffHum  = (lastHum == 0.0f) ? 0.0f : (data.humidity - lastHum);
-    diffPres = (lastPres == 0.0f) ? 0.0f : (data.pressure / 100.0f - lastPres);
+    // Update sensor values
+    tempBuffer[si][gi] = data.temperature;
+    humBuffer[si][gi]  = data.humidity;
+    presBuffer[si][gi] = data.pressure / 100.0f;
 
-    lastTemp = data.temperature;
-    lastHum  = data.humidity;
-    lastPres = data.pressure / 100.0f;
+    lastTemp[si] = data.temperature;
+    lastHum[si]  = data.humidity;
+    lastPres[si] = data.pressure / 100.0f;
 
     if ((data.status & GAS_VALID_MSK) == GAS_VALID_MSK) {
-      gasDiffBuffer[gi] = (gi == 0) ? 0.0f : (gasReceived[gi - 1] ? (data.gas_resistance - gasBuffer[gi - 1]) : 0.0f);
-      gasBuffer[gi]   = data.gas_resistance;
-      gasReceived[gi] = true;
-      cycleHasData    = true;
+      gasBuffer[si][gi]   = data.gas_resistance;
+      gasReceived[si][gi] = true;
+      cycleHasData[si]    = true;
     }
 
-    lastGasIdx = (int8_t)gi;
+    lastGasIdx[si] = (int8_t)gi;
   }
 }
 
@@ -282,8 +332,10 @@ void handleCommand(const String &cmd) {
       return;
     }
     const HeatingProfile &prof = PROFILES[activeProfile];
-    cycleHasData = false;
-    resetGasBuffer(prof.profileLen);
+    for (uint8_t si = 0; si < 8; si++) {
+      cycleHasData[si] = false;
+      resetBuffers(si, prof.profileLen);
+    }
     bme.setOpMode(BME68X_SEQUENTIAL_MODE);
     running = true;
     Serial.println(">> Running profile " + String(activeProfile + 1) +
@@ -396,6 +448,11 @@ void loop() {
   }
 
   if (!running) return;
-  pollMeasurement();
+
+  for (uint8_t si = 0; si < 8; si++) {
+    pollSequentialMeasurement(si);
+  }
+
+  // pollMeasurement();
   delay(10);
 }
