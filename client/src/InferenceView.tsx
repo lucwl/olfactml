@@ -12,8 +12,10 @@ export default function InferenceView({ payload }: InferenceViewParams) {
         <h3>Detected: {payload.prediction}</h3>
         <h3>Scores:</h3>
         <ul>
-          {Object.entries(payload.scores).map(([label, score]) =>
-            <li><p>{score}% {label}</p></li>)}
+          {Object.entries(payload.scores).map(([label, score]) => {
+            // @ts-ignore
+            return (<li key={score.label}><p>{score.label}: {score.score}</p></li>)
+          })}
         </ul>
       </>
     )}
