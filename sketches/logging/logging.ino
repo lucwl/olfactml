@@ -239,7 +239,7 @@ Bme68x  bme;
 commMux commSetup;
 
 uint8_t sensorIdx        = 0;                   // 0-based active sensor (for plotting)
-uint8_t sensorProfile[8] = {0,0,0,0,0,0,0,0};  // per-sensor profile index
+uint8_t sensorProfile[8] = {11,11,11,11,11,11,11,11};  // per-sensor profile index
 
 /* Shared heater duration (ms) per sensor, computed in initSensor for
  * parallel profiles; used to convert multipliers to approximate ms. */

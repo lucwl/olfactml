@@ -105,7 +105,7 @@ bool    gasReceived[8][10];
 float   lastHum[8] = {0};
 // float   lastPres[8] = {0};
 // float   diffTemp[8] = {0};
-float   diffHum[8] = {0};
+// float   diffHum[8] = {0};
 // float   diffPres[8] = {0};
 int8_t  lastGasIdx[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 bool    cycleHasData[8] = {false};
@@ -213,7 +213,7 @@ void runInference(const HeatingProfile &prof, uint8_t si) {
     const float raw[NUM_FEATURES] = {
       // lastTemp[si],
       // lastPres[si],
-      lastHum[si],
+      humBuffer[si][t],
       gasRatio,  // Use ratio instead of raw gas resistance
     };
 
@@ -277,10 +277,10 @@ void runInference(const HeatingProfile &prof, uint8_t si) {
 }
 
 /* Sensor initialization */
-bool initSensor() {
+bool initSensor(uint8_t si) {
   const HeatingProfile &prof = PROFILES[activeProfile];
 
-  commSetup = commMuxSetConfig(Wire, SPI, sensorIdx, commSetup);
+  commSetup = commMuxSetConfig(Wire, SPI, si, commSetup);
   bme.begin(BME68X_SPI_INTF, commMuxRead, commMuxWrite, commMuxDelay, &commSetup);
 
   if (bme.checkStatus()) {
@@ -398,17 +398,17 @@ void handleCommand(const String &cmd) {
       Serial.println(">> Already running. Send 'stop' first.");
       return;
     }
-    if (!initSensor()) {
-      Serial.println(">> Sensor init failed — cannot start.");
-      return;
-    }
     const HeatingProfile &prof = PROFILES[activeProfile];
+    resetBaseline();
     for (uint8_t si = 0; si < 8; si++) {
       cycleHasData[si] = false;
       resetBuffers(si, prof.profileLen);
+      if (!initSensor(si)) {
+        Serial.println(">> Sensor " + String(si + 1) + " init failed — skipping.");
+        continue;
+      }
+      bme.setOpMode(BME68X_SEQUENTIAL_MODE);
     }
-    resetBaseline();
-    bme.setOpMode(BME68X_SEQUENTIAL_MODE);
     running = true;
     currentState = STATE_INITIAL_WAIT;
     stateStartTime = millis();
@@ -470,11 +470,11 @@ void setup() {
   bleInit();
   Serial.println("BLE initialized");
 
-  if (!initSensor()) {
+  if (!initSensor(0)) {
     Serial.println("Halting.");
     while (1);
   }
-  Serial.println("Sensor OK (index " + String(sensorIdx + 1) + ")");
+  Serial.println("Sensor OK (index 1)");
 
   const tflite::Model* tfl_model = tflite::GetModel(g_model);
 
@@ -561,6 +561,7 @@ void loop() {
   // Poll all sensors regardless of state (for burn-in, baseline, and inference)
   if (currentState != STATE_IDLE) {
     for (uint8_t si = 0; si < 8; si++) {
+      commSetup = commMuxSetConfig(Wire, SPI, si, commSetup);
       pollSequentialMeasurement(si);
     }
   }
