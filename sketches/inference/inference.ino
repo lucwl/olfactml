@@ -72,7 +72,7 @@ Bme68x  bme;
 commMux commSetup;
 
 uint8_t  sensorIdx     = 0;
-uint8_t  activeProfile = 1;  // default to LinSweep (10-step profile)
+uint8_t  activeProfile = 3;  // default to WideSweep (10-step profile)
 bool     running       = false;
 
 /* Baseline recording state */
