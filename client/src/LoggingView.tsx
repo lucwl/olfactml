@@ -90,7 +90,7 @@ export default function LoggingView({ payload }: LoggingViewParams) {
         color: '#666',
         textTransform: 'uppercase',
         letterSpacing: '0.1em'
-      }}>BME680 / Live Data</h1>
+      }}>BME688 / Live Data</h1>
       {payload && (
         <span style={{
           fontSize: '0.8rem',
