@@ -21,13 +21,8 @@ NB: avoid touching the sensors while testing the device, as contamination on the
 
 The primary sketches used:
 
-1. `main.ino`: real-time inference and configuration
-2. `data_collection.ino`: data collection plan execution and logging to SD card
-
-Legacy sketches:
-
-1. `real_time_inference.ino`: real-time inference with no baseline calculation
-2. `real_time_plotting`: old version of data logging to Serial Monitor / Plotter and writing to SD card
+1. `inference.ino`: real-time inference and configuration
+2. `logging.ino`: data collection plan execution and logging to SD card
 
 ## Data Collection
 
@@ -59,7 +54,7 @@ There are a number of options available in these scripts, type `--help` to view 
 
 Once you have them ready, put `model.h` and `statistics.h` into the `main` sketch folder.
 
-In `main.ino`, pay attention to the following parts:
+In `inference.ino`, pay attention to the following parts:
 
 1. Make sure that `NUM_FEATURES`, `NUM_CLASSES`, `MODEL_TYPE`, `PREPROCESSING_TYPE` matches your setup.
 2. Make sure that the right features are passed into the model and in the right order. This happens at three places in the code, always with the pattern:
