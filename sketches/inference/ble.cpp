@@ -45,7 +45,7 @@ void bleInit() {
 }
 
 void bleTransmit(JsonDocument doc) {
-  char buffer[128];
+  char buffer[512];
   serializeJson(doc, buffer);
 
   pCharacteristic->setValue(buffer);
