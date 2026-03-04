@@ -114,7 +114,7 @@ String cmdBuffer = "";
 
 /* TFLite Micro objects */
 alignas(16) static uint8_t tensor_arena[kTensorArenaSize];
-static tflite::MicroMutableOpResolver<5> resolver;
+static tflite::MicroMutableOpResolver<6> resolver;
 static tflite::MicroInterpreter* interpreter = nullptr;
 
 /* z-score normalization */
@@ -486,6 +486,7 @@ void setup() {
   resolver.AddMean();
   resolver.AddFullyConnected();
   resolver.AddSoftmax();
+  resolver.AddExpandDims();
 
   static tflite::MicroInterpreter static_interpreter(tfl_model, resolver, tensor_arena, kTensorArenaSize);
   interpreter = &static_interpreter;
