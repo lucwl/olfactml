@@ -467,6 +467,9 @@ void setup() {
   commMuxBegin(Wire, SPI);
   delay(100);
 
+  bleInit();
+  Serial.println("BLE initialized");
+
   if (!initSensor()) {
     Serial.println("Halting.");
     while (1);
