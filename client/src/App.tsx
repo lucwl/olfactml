@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
+import type { LoggingPayload, InferencePayload, Message } from './types'
+import { Mode } from "./types"
+import InferenceView from "./InferenceView"
+import LoggingView from "./LoggingView"
 
 function App() {
-  const [messages, setMessages] = useState<string[]>([])
+  const [mode, setMode] = useState<Mode>(Mode.Inference)
+  const [loggingPayload, setLoggingPayload] = useState<LoggingPayload | null>(null)
+  const [inferencePayload, setInferencePayload] = useState<InferencePayload | null>(null)
 
   useEffect(() => {
     const ws = new WebSocket('ws://localhost:3000/ws')
@@ -11,7 +17,19 @@ function App() {
     }
 
     ws.onmessage = (event) => {
-      setMessages((prev) => [...prev, event.data])
+      const message: Message<any> = JSON.parse(event.data)
+
+      setMode(message.op)
+
+      switch (message.op) {
+        case Mode.Logging: {
+          const payload: LoggingPayload = message.d as LoggingPayload
+          break
+        }
+        case Mode.Inference: {
+          const payload: InferencePayload = message.d as InferencePayload
+        }
+      }
     }
 
     ws.onerror = (error) => {
@@ -29,12 +47,7 @@ function App() {
 
   return (
     <div>
-      <h1>WebSocket Messages</h1>
-      <div>
-        {messages.map((msg, i) => (
-          <div key={i}>Received: {msg}</div>
-        ))}
-      </div>
+      {mode == Mode.Inference ? <InferenceView payload={inferencePayload} /> : <LoggingView payload={loggingPayload} />}
     </div>
   )
 }
