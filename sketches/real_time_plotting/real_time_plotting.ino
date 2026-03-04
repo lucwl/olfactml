@@ -190,6 +190,22 @@ const HeatingProfile PROFILES[] = {
     {200, 180, 160, 150, 150, 140, 140, 140, 140, 140},
     BME68X_ODR_500_MS
   },
+  {
+    "seq",
+    "[S] Fast 3-step 220,320,400 C / 100 ms each, no sleep",
+    SCAN_SEQUENTIAL, 0, 0, 3,
+    {220, 320, 400},   // heater temps
+    {100,  100,  100},    // heater durations in ms
+    BME68X_ODR_NONE    // no sleep between cycles
+  },
+  {
+    "seq2",
+    "[S] Fast 5-step 100, 160, 250, 300, 380",
+    SCAN_SEQUENTIAL, 0, 0, 5,
+    {120, 200, 280, 350, 420},
+    {200, 160, 150, 140, 140},
+    BME68X_ODR_NONE
+  }
 };
 
 const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
