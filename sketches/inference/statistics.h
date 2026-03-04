@@ -14,10 +14,8 @@
  * STATS_SEQ_LEN == 1 for forced-mode (single-step) models.
  *
  * Feature order — must match the order used when training the model:
- *   [0]  temperature              ()
- *   [1]  pressure                 ()
- *   [2]  humidity                 ()
- *   [3]  gas_resistance           ()
+ *   [0]  humidity                 ()
+ *   [1]  gas_resistance           ()
  */
 
 #ifndef STATISTICS_H
@@ -25,24 +23,21 @@
 
 constexpr int STATS_SEQ_LEN = 10;
 
-const float FEATURE_MEAN[8][4] = {
-    {30.025212f, 1036.479646f, 27.245748f, 6237017.689008f},
-    {29.670646f, 1113.582180f, 36.112045f, 7992768.769663f},
-    {29.465318f, 1040.814693f, 36.608744f, 9200773.197727f},
-    {28.878228f, 1110.617647f, 34.507111f, 8285458.134473f},
-    {29.528349f, 1118.901645f, 33.455273f, 6706605.313803f},
-    {30.191078f, 1116.385033f, 34.777628f, 5052850.557778f},
-    {30.725647f, 1070.837165f, 30.587261f, 5610656.537255f},
-    {30.291080f, 1017.548644f, 24.463345f, 5012678.598276f}};
+// Feature Mean Array [Classes/Time-steps][Features]
+static const float FEATURE_MEAN[8][1] = {
+    {28.25871812f}, // Index 0 (Humidity Mean 1)
+    {37.36478082f}, // Index 1
+    {40.05958451f}, // Index 2
+    {36.71642308f}, // Index 3
+    {35.35853285f}, // Index 4
+    {36.23986452f}, // Index 5
+    {31.47810345f}, // Index 6
+    {25.11798601f}  // Index 7
+};
 
-const float FEATURE_STD[8][4] = {
-    {3.806858f, 0.760150f, 5.480175f, 17167204.978526f},
-    {3.824631f, 0.780799f, 5.771769f, 19861520.805260f},
-    {3.818107f, 0.783936f, 5.426170f, 21829626.772693f},
-    {3.951215f, 0.787785f, 5.600093f, 20370054.844133f},
-    {4.717002f, 0.793379f, 5.728366f, 17806479.535718f},
-    {4.421186f, 0.809515f, 5.853373f, 14769429.116743f},
-    {4.805671f, 0.758615f, 5.197413f, 15665347.791317f},
-    {4.915497f, 0.767109f, 5.249009f, 14687321.315591f}};
+// Feature Standard Deviation Array [Classes/Time-steps][Features]
+static const float FEATURE_STD[8][1] = {
+    {3.79134537f}, {3.87945797f}, {6.94200623f}, {5.23985893f},
+    {5.26721447f}, {4.95424315f}, {4.27913689f}, {4.10542819f}};
 
 #endif /* STATISTICS_H */

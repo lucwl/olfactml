@@ -5,7 +5,7 @@
  * CNN inference to classify odors (air, basil, cinnamon, oregano, rosemary).
  *
  * Model: CNN (10 timesteps × 8 features) → 5-class softmax
- * Features: temp, pressure, humidity, gas + deltas from previous step
+ * Features: humidity, gas + deltas from previous step
  *
  * Serial commands: run | stop | profile <N> | profiles | status
  *
@@ -63,7 +63,7 @@ const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
 constexpr int kTensorArenaSize = 32 * 1024;
 constexpr int NUM_CLASSES  = 3;
 // constexpr int NUM_FEATURES = 8;
-constexpr int NUM_FEATURES = 4;
+constexpr int NUM_FEATURES = 2;
 
 const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "cinnamon", "rosemary" };
 
@@ -94,19 +94,19 @@ float baselineSum[8][10] = {0.0f};
 
 /* Scan accumulation - per sensor */
 float gasBuffer[8][10];
-float tempBuffer[8][10];
+// float tempBuffer[8][10];
 float humBuffer[8][10];
-float presBuffer[8][10];
+// float presBuffer[8][10];
 
 float gasBaseline[8][10];
 
 bool    gasReceived[8][10];
-float   lastTemp[8] = {0};
+// float   lastTemp[8] = {0};
 float   lastHum[8] = {0};
-float   lastPres[8] = {0};
-float   diffTemp[8] = {0};
+// float   lastPres[8] = {0};
+// float   diffTemp[8] = {0};
 float   diffHum[8] = {0};
-float   diffPres[8] = {0};
+// float   diffPres[8] = {0};
 int8_t  lastGasIdx[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 bool    cycleHasData[8] = {false};
 
@@ -163,9 +163,9 @@ void finalizeBaseline() {
 void resetBuffers(uint8_t si, uint8_t len) {
   for (uint8_t i = 0; i < len; i++) {
     gasBuffer[si][i]   = 0.0f;
-    tempBuffer[si][i]  = 0.0f;
+    // tempBuffer[si][i]  = 0.0f;
     humBuffer[si][i]   = 0.0f;
-    presBuffer[si][i]  = 0.0f;
+    // presBuffer[si][i]  = 0.0f;
 
     gasReceived[si][i] = false;
   }
@@ -211,8 +211,8 @@ void runInference(const HeatingProfile &prof, uint8_t si) {
     float gasRatio = calculateRatio(gasBuffer[si][t], si, t);
 
     const float raw[NUM_FEATURES] = {
-      lastTemp[si],
-      lastPres[si],
+      // lastTemp[si],
+      // lastPres[si],
       lastHum[si],
       gasRatio,  // Use ratio instead of raw gas resistance
     };
@@ -220,11 +220,13 @@ void runInference(const HeatingProfile &prof, uint8_t si) {
     Serial.print("Input array: ");
     int base = t * NUM_FEATURES;
     for (int i = 0; i < NUM_FEATURES; i++) {
-      // For gas ratio (feature 3), skip normalization
-      if (i == 3) {
-        inp->data.f[base + i] = raw[i];
+      // For gas ratio (feature 1), skip normalization; only normalize humidity (feature 0)
+      if (i == 0) {
+        // Normalize humidity using FEATURE_STD[si][0]
+        inp->data.f[base + i] = (FEATURE_STD[si][0] != 0.0f) ? standardise(raw[i], si, 0) : raw[i];
       } else {
-        inp->data.f[base + i] = (FEATURE_STD[si][i] != 0.0f) ? standardise(raw[i], si, i) : raw[i];
+        // Gas ratio - no normalization
+        inp->data.f[base + i] = raw[i];
       }
       Serial.print(" ");
       Serial.print(inp->data.f[base + i]);
@@ -365,13 +367,13 @@ void pollSequentialMeasurement(uint8_t si) {
     }
 
     // Update sensor values
-    tempBuffer[si][gi] = data.temperature;
+    // tempBuffer[si][gi] = data.temperature;
     humBuffer[si][gi]  = data.humidity;
-    presBuffer[si][gi] = data.pressure / 100.0f;
+    // presBuffer[si][gi] = data.pressure / 100.0f;
 
-    lastTemp[si] = data.temperature;
+    // lastTemp[si] = data.temperature;
     lastHum[si]  = data.humidity;
-    lastPres[si] = data.pressure / 100.0f;
+    // lastPres[si] = data.pressure / 100.0f;
 
     if ((data.status & GAS_VALID_MSK) == GAS_VALID_MSK) {
       gasBuffer[si][gi]   = data.gas_resistance;
