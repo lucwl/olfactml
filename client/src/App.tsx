@@ -24,10 +24,12 @@ function App() {
       switch (message.op) {
         case Mode.Logging: {
           const payload: LoggingPayload = message.d as LoggingPayload
+          setLoggingPayload(payload)
           break
         }
         case Mode.Inference: {
           const payload: InferencePayload = message.d as InferencePayload
+          setInferencePayload(payload)
         }
       }
     }
