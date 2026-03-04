@@ -19,6 +19,7 @@
 #include "commMux.h"
 #include "model.h"
 #include "statistics.h"
+#include "ble.h"
 
 #include <tensorflow/lite/micro/micro_interpreter.h>
 #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>

@@ -19,7 +19,7 @@ class CentralCallbacks : public BLEServerCallbacks {
     deviceConnected = false;
     Serial.println("Disconnected from central");
   }
-}
+};
 
 void bleInit() {
   Serial.println("Initialising BLE service");
