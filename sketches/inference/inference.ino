@@ -470,11 +470,13 @@ void setup() {
   bleInit();
   Serial.println("BLE initialized");
 
-  if (!initSensor(0)) {
-    Serial.println("Halting.");
-    while (1);
+  for (uint8_t si = 0; si < 8; si++) {
+    if (!initSensor(si)) {
+      Serial.println("Sensor " + String(si + 1) + " init failed - Halting.");
+      while (1);
+    }
+    Serial.println("Sensor OK (index " + String(si + 1) + ")");
   }
-  Serial.println("Sensor OK (index 1)");
 
   const tflite::Model* tfl_model = tflite::GetModel(g_model);
 
