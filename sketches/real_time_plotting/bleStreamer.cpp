@@ -49,11 +49,8 @@ void bleStreamRow(uint8_t sensorIndex, uint32_t fingerprintIndex,
   }
 
   JsonDocument doc;
-
-  JsonDocument doc;
   doc["op"] = 1;
 
-  // Create a nested object for data
   JsonObject d = doc["d"].to<JsonObject>();
   d["idx"] = sensorIndex;
   d["f_idx"] = fingerprintIndex;
@@ -64,8 +61,7 @@ void bleStreamRow(uint8_t sensorIndex, uint32_t fingerprintIndex,
   d["p"] = pressure;
   d["h"] = humidity;
   d["gas"] = gasResistance;
-  d["lbl"] =
-      label; // ArduinoJson handles the .c_str() automatically for Strings
+  d["lbl"] = label;
 
   char buffer[512];
   serializeJson(doc, buffer);
