@@ -48,8 +48,9 @@
  * Required libraries: bme68xLibrary (Bosch Sensortec), SD (Arduino built-in)
  */
 
-#include "Arduino.h"
-#include "bme68xLibrary.h"
+#include <Arduino.h>
+#include <ArduinoJson.h>
+#include <bme68xLibrary.h>
 #include "commMux.h"
 #include "sdLogger.h"
 #include "bleStreamer.h"
