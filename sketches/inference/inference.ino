@@ -61,11 +61,11 @@ const uint8_t NUM_PROFILES = sizeof(PROFILES) / sizeof(PROFILES[0]);
 
 /* Model configuration */
 constexpr int kTensorArenaSize = 32 * 1024;
-constexpr int NUM_CLASSES  = 5;
+constexpr int NUM_CLASSES  = 3;
 // constexpr int NUM_FEATURES = 8;
 constexpr int NUM_FEATURES = 4;
 
-const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "basil", "cinnamon", "oregano", "rosemary"};
+const char* const CLASS_LABELS[NUM_CLASSES] = { "air", "cinnamon", "rosemary" };
 
 /* Globals */
 Bme68x  bme;
@@ -75,11 +75,30 @@ uint8_t  sensorIdx     = 0;
 uint8_t  activeProfile = 1;  // default to LinSweep (10-step profile)
 bool     running       = false;
 
+/* Baseline recording state */
+enum State {
+  STATE_IDLE,
+  STATE_INITIAL_WAIT,
+  STATE_RECORDING_BASELINE,
+  STATE_INFERENCE
+};
+
+State currentState = STATE_IDLE;
+unsigned long stateStartTime = 0;
+const unsigned long INITIAL_WAIT_MS = 120000;  // 120 seconds
+const unsigned long BASELINE_DURATION_MS = 60000;  // 60 seconds
+
+bool baselineRecorded[8][10] = {false};
+uint32_t baselineSampleCount[8][10] = {0};
+float baselineSum[8][10] = {0.0f};
+
 /* Scan accumulation - per sensor */
 float gasBuffer[8][10];
 float tempBuffer[8][10];
 float humBuffer[8][10];
 float presBuffer[8][10];
+
+float gasBaseline[8][10];
 
 bool    gasReceived[8][10];
 float   lastTemp[8] = {0};
@@ -103,7 +122,43 @@ inline float standardise(float value, uint8_t si, int feat) {
   return (value - FEATURE_MEAN[si][feat]) / FEATURE_STD[si][feat];
 }
 
+float calculateRatio(float gasRes, uint8_t si, uint8_t gi) {
+  if (gasBaseline[si][gi] == 0.0f) return 0.0f;
+  return log(gasRes / gasBaseline[si][gi]);
+}
+
 /* Helpers */
+
+void resetBaseline() {
+  for (uint8_t si = 0; si < 8; si++) {
+    for (uint8_t gi = 0; gi < 10; gi++) {
+      gasBaseline[si][gi] = 0.0f;
+      baselineSum[si][gi] = 0.0f;
+      baselineSampleCount[si][gi] = 0;
+      baselineRecorded[si][gi] = false;
+    }
+  }
+}
+
+void finalizeBaseline() {
+  for (uint8_t si = 0; si < 8; si++) {
+    for (uint8_t gi = 0; gi < 10; gi++) {
+      if (baselineSampleCount[si][gi] > 0) {
+        gasBaseline[si][gi] = baselineSum[si][gi] / baselineSampleCount[si][gi];
+        baselineRecorded[si][gi] = true;
+        Serial.print("Baseline [S");
+        Serial.print(si);
+        Serial.print("][Step");
+        Serial.print(gi);
+        Serial.print("]: ");
+        Serial.print(gasBaseline[si][gi]);
+        Serial.print(" (");
+        Serial.print(baselineSampleCount[si][gi]);
+        Serial.println(" samples)");
+      }
+    }
+  }
+}
 
 void resetBuffers(uint8_t si, uint8_t len) {
   for (uint8_t i = 0; i < len; i++) {
@@ -152,17 +207,25 @@ void runInference(const HeatingProfile &prof, uint8_t si) {
   }
 
   for (uint8_t t = 0; t < prof.profileLen; t++) {
+    // Calculate gas ratio instead of using raw/normalized gas resistance
+    float gasRatio = calculateRatio(gasBuffer[si][t], si, t);
+
     const float raw[NUM_FEATURES] = {
       lastTemp[si],
       lastPres[si],
       lastHum[si],
-      gasBuffer[si][t],
+      gasRatio,  // Use ratio instead of raw gas resistance
     };
 
     Serial.print("Input array: ");
     int base = t * NUM_FEATURES;
     for (int i = 0; i < NUM_FEATURES; i++) {
-      inp->data.f[base + i] = (FEATURE_STD[si][i] != 0.0f) ? standardise(raw[i], si, i) : raw[i];
+      // For gas ratio (feature 3), skip normalization
+      if (i == 3) {
+        inp->data.f[base + i] = raw[i];
+      } else {
+        inp->data.f[base + i] = (FEATURE_STD[si][i] != 0.0f) ? standardise(raw[i], si, i) : raw[i];
+      }
       Serial.print(" ");
       Serial.print(inp->data.f[base + i]);
       Serial.print(" ");
@@ -291,9 +354,9 @@ void pollSequentialMeasurement(uint8_t si) {
 
     uint8_t gi = data.gas_index;
 
-    // Runs inference at the end of each heating cycle
+    // Runs inference at the end of each heating cycle (only in inference state)
     if (lastGasIdx[si] >= 0 && (int8_t)gi < lastGasIdx[si]) {
-      if (cycleHasData[si] && validateScanSize(si, prof.profileLen)) {
+      if (currentState == STATE_INFERENCE && cycleHasData[si] && validateScanSize(si, prof.profileLen)) {
         Serial.print("Complete " + String(prof.profileLen) + "-step scan — ");
         runInference(prof, si);
       }
@@ -314,6 +377,12 @@ void pollSequentialMeasurement(uint8_t si) {
       gasBuffer[si][gi]   = data.gas_resistance;
       gasReceived[si][gi] = true;
       cycleHasData[si]    = true;
+
+      // Accumulate baseline during baseline recording state
+      if (currentState == STATE_RECORDING_BASELINE) {
+        baselineSum[si][gi] += data.gas_resistance;
+        baselineSampleCount[si][gi]++;
+      }
     }
 
     lastGasIdx[si] = (int8_t)gi;
@@ -336,10 +405,14 @@ void handleCommand(const String &cmd) {
       cycleHasData[si] = false;
       resetBuffers(si, prof.profileLen);
     }
+    resetBaseline();
     bme.setOpMode(BME68X_SEQUENTIAL_MODE);
     running = true;
+    currentState = STATE_INITIAL_WAIT;
+    stateStartTime = millis();
     Serial.println(">> Running profile " + String(activeProfile + 1) +
                    " [" + String(prof.name) + "]");
+    Serial.println(">> Starting 120s initial wait...");
 
   } else if (cmd == "stop") {
     if (!running) {
@@ -348,6 +421,7 @@ void handleCommand(const String &cmd) {
     }
     bme.setOpMode(BME68X_SLEEP_MODE);
     running = false;
+    currentState = STATE_IDLE;
     Serial.println(">> Stopped.");
 
   } else if (cmd.startsWith("profile ")) {
@@ -449,8 +523,40 @@ void loop() {
 
   if (!running) return;
 
-  for (uint8_t si = 0; si < 8; si++) {
-    pollSequentialMeasurement(si);
+  unsigned long elapsed = millis() - stateStartTime;
+
+  // State machine for baseline recording
+  switch (currentState) {
+    case STATE_INITIAL_WAIT:
+      if (elapsed >= INITIAL_WAIT_MS) {
+        Serial.println(">> Initial wait complete. Starting 60s baseline recording...");
+        currentState = STATE_RECORDING_BASELINE;
+        stateStartTime = millis();
+      }
+      break;
+
+    case STATE_RECORDING_BASELINE:
+      if (elapsed >= BASELINE_DURATION_MS) {
+        finalizeBaseline();
+        Serial.println(">> Baseline recording complete. Starting inference...");
+        currentState = STATE_INFERENCE;
+      }
+      break;
+
+    case STATE_INFERENCE:
+      // Normal inference operation
+      break;
+
+    case STATE_IDLE:
+      // Do nothing
+      break;
+  }
+
+  // Poll all sensors regardless of state (for burn-in, baseline, and inference)
+  if (currentState != STATE_IDLE) {
+    for (uint8_t si = 0; si < 8; si++) {
+      pollSequentialMeasurement(si);
+    }
   }
 
   // pollMeasurement();
