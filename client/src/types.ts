@@ -12,9 +12,14 @@ export interface LoggingPayload {
   lbl: number
 }
 
+export interface ScoreItem {
+  label: string
+  score: number
+}
+
 export interface InferencePayload {
   prediction: string
-  scores: Record<string, number>
+  scores: Record<string, ScoreItem>
 }
 
 export interface Message<T> {
