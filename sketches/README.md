@@ -23,6 +23,3 @@ The primary sketches used:
 
 1. `inference.ino`: real-time inference and configuration
 2. `logging.ino`: data collection plan execution and logging to SD card
-
-You can edit the active sensors using the command `sensors <n, m, ...>`. Make sure that you run the sensors you have trained on, as there may be an offset between sensors. If you run inference with multiple sensors, the code is going to poll the sensors until a valid cycle is collected from _every_ sensor. Then these values are averaged, giving us the final input array that is passed into the network.
-You might notice that this results in significant latency, since it is not rare for cycles to be dropped due to one or more missing steps. We can reduce this overhead by running `impute on`, which will replace missing values with the average across the successfully collected ones.
